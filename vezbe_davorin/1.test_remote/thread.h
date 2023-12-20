@@ -18,7 +18,7 @@
 
 void *myThreadRemote();
 void setupScreen();
-
+void drawNumber();
 
 
 

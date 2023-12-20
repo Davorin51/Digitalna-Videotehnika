@@ -34,22 +34,6 @@ int32_t getKeys(int32_t count, uint8_t* buf, int32_t* eventRead);
 void stringPrintChannel(int channel){
 
 
-
-    DFBCHECK(primary->Flip(primary,
-                           /*region to be updated, NULL for the whole surface*/NULL,
-                           /*flip flags*/0));
-
-    char str[50];
-    sprintf(str,"%d",channel); 
-
-    int tempChannel=channel, counter=0;
-
-    while(tempChannel!=0){
-        tempChannel/=10;
-        counter++;
-    }
-
-
     DFBCHECK(DirectFBInit(0,0));
     /* fetch the DirectFB interface */
 	DFBCHECK(DirectFBCreate(&dfbInterface));
@@ -89,33 +73,24 @@ void stringPrintChannel(int channel){
 	
     DFBCHECK(primary->FillRectangle(/*surface to draw on*/ primary,
                                     /*upper left x coordinate*/ screenWidth - 300,
-                                    /*upper left y coordinate*/ 100,
+                                    /*upper left y coordinate*/ channel,
                                     /*rectangle width*/ 200,
                                     /*rectangle height*/ 200));
 
 
-        DFBCHECK(primary->SetColor(/*surface to draw on*/ primary,
-                               /*red*/ 0x00,
-                               /*green*/ 0x00,
-                               /*blue*/ 0xff,
-                               /*alpha*/ 0xff));
-	
-    DFBCHECK(primary->FillRectangle(/*surface to draw on*/ primary,
-                                    /*upper left x coordinate*/ 100,
-                                    /*upper left y coordinate*/ 100,
-                                    /*rectangle width*/ 100,
-                                    /*rectangle height*/ 100));
+    
     
     
     
 	/* line drawing */
-    
+    /*
 	DFBCHECK(primary->SetColor(primary, 0xff, 0xff, 0xff, 0xff));
 	DFBCHECK(primary->DrawLine(primary,
-                               /*x coordinate of the starting point*/ 100,
-                               /*y coordinate of the starting point*/ screenHeight - 170,
-                               /*x coordinate of the ending point*/ screenWidth,
-                               /*y coordinate of the ending point*/ screenHeight - 170));
+                                100,
+                                screenHeight - 170,
+                                screenWidth,
+                              screenHeight - 170));
+                              */
 	
     
 	/* draw text */
@@ -127,59 +102,61 @@ void stringPrintChannel(int channel){
 	fontDesc.flags = DFDESC_HEIGHT;
 	fontDesc.height = 50;
 	
+    printf("Kanal je %d\t", channel);
     /* create the font and set the created font for primary surface text drawing */
 	DFBCHECK(dfbInterface->CreateFont(dfbInterface, "/home/galois/fonts/DejaVuSans.ttf", &fontDesc, &fontInterface));
 	DFBCHECK(primary->SetFont(primary, fontInterface));
     
+    if(channel == 5){
 	DFBCHECK(primary->SetColor(primary, 0xff, 0xff, 0xff, 0xff));
     /* draw the text */
 	DFBCHECK(primary->DrawString(primary,
-                                /*text to be drawn*/ "CRVENO",
+                                /*text to be drawn*/ "5",
+                             	/*number of bytes in the string, -1 for NULL terminated strings*/ -1,
+                                /*x coordinate of the lower left corner of the resulting text*/ screenWidth/2,
+                                /*y coordinate of the lower left corner of the resulting text*/ screenHeight - 200,
+                                /*in case of multiple lines, allign text to left*/ DSTF_CENTER));
+    }
+    else if(channel == 4){
+	DFBCHECK(primary->SetColor(primary, 0xff, 0xff, 0xff, 0xff));
+    /* draw the text */
+	DFBCHECK(primary->DrawString(primary,
+                                /*text to be drawn*/ "4",
                              	/*number of bytes in the string, -1 for NULL terminated strings*/ -1,
                                 /*x coordinate of the lower left corner of the resulting text*/ screenWidth/2,
                                 /*y coordinate of the lower left corner of the resulting text*/ screenHeight - 200,
                                 /*in case of multiple lines, allign text to left*/ DSTF_CENTER));
 	
-    
+    }
+    else{
+       return;
+    }
 
-    
-	IDirectFBImageProvider *provider;
-	IDirectFBSurface *logoSurface = NULL;
-	int32_t logoHeight, logoWidth;
-	
-    /* create the image provider for the specified file */
-	DFBCHECK(dfbInterface->CreateImageProvider(dfbInterface, "dfblogo_alpha.png", &provider));
-    /* get surface descriptor for the surface where the image will be rendered */
-	DFBCHECK(provider->GetSurfaceDescription(provider, &surfaceDesc));
-    /* create the surface for the image */
-	DFBCHECK(dfbInterface->CreateSurface(dfbInterface, &surfaceDesc, &logoSurface));
-    /* render the image to the surface */
-	DFBCHECK(provider->RenderTo(provider, logoSurface, NULL));
-	
-    /* cleanup the provider after rendering the image to the surface */
-	provider->Release(provider);
-	
-    /* fetch the logo size and add (blit) it to the screen */
-	//DFBCHECK(logoSurface->GetSize(logoSurface, &logoWidth, &logoHeight));
-	//DFBCHECK(primary->Blit(primary,
-      //                     /*source surface*/ logoSurface,
-        //                   /*source region, NULL to blit the whole surface*/ NULL,
-          //                 /*destination x coordinate of the upper left corner of the image*/50,
-            //               /*destination y coordinate of the upper left corner of the image*/screenHeight - logoHeight -50));
-    
-    
+   
     /* switch between the displayed and the work buffer (update the display) */
 	DFBCHECK(primary->Flip(primary,
                            /*region to be updated, NULL for the whole surface*/NULL,
                            /*flip flags*/0));
     
     /* wait 5 seconds before terminating*/
-	sleep(10);
+	sleep(4);
 
     
     /*clean up*/
    	primary->Release(primary);
 	dfbInterface->Release(dfbInterface);
+
+
+    char str[50];
+    sprintf(str,"%d",channel); 
+
+    int tempChannel=channel, counter=0;
+
+    while(tempChannel!=0){
+        tempChannel/=10;
+        counter++;
+    }
+    
 }
 
 enum REMOTE_BUTTON {
@@ -253,6 +230,7 @@ void *myThreadRemote(){
                     else program = 0;
                    // printf("Upaljen program broj %d\n", program);
                     stringPrintChannel(program);
+                    
 
                     break;
                 }
