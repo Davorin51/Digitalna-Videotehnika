@@ -8,13 +8,34 @@
 #define NO_ERROR 		0
 #define ERROR			1
 
+#define DFBCHECK(x...)                                      \
+{                                                           \
+DFBResult err = x;                                          \
+                                                            \
+if (err != DFB_OK)                                          \
+  {                                                         \
+    fprintf( stderr, "%s <%d>:\n\t", __FILE__, __LINE__ );  \
+    DirectFBErrorFatal( #x, err );                          \
+  }                                                         \
+}
 static int32_t inputFileDesc;
 
 int32_t getKeys(int32_t count, uint8_t* buf, int32_t* eventRead);
 
+    IDirectFBSurface *primary = NULL;
+    IDirectFB *dfbInterface = NULL; //sadrzi razne podatke o tom interfejsu
+    int screenWidth = 0;
+    int screenHeight = 0;
+    DFBSurfaceDescription surfaceDesc; 
+
+    IDirectFBFont *fontInterface = NULL;
+    DFBFontDescription fontDesc;
+
 void stringPrintChannel(int channel){
 
-        DFBCHECK(primary->Flip(primary,
+
+
+    DFBCHECK(primary->Flip(primary,
                            /*region to be updated, NULL for the whole surface*/NULL,
                            /*flip flags*/0));
 
@@ -29,61 +50,136 @@ void stringPrintChannel(int channel){
     }
 
 
-
-   /* static IDirectFBSurface *primary = NULL; //glavni, u njemu se radi sve
-    IDirectFB *dfbInterface = NULL; //sadrzi razne podatke o tom interfejsu
-    static int screenWidth = 0;
-    static int screenHeight = 0;
-	DFBSurfaceDescription surfaceDesc; */
-    
-    
-    /* initialize DirectFB */
-    
+    DFBCHECK(DirectFBInit(0,0));
+    /* fetch the DirectFB interface */
+	DFBCHECK(DirectFBCreate(&dfbInterface));
+    /* tell the DirectFB to take the full screen for this application */
+	DFBCHECK(dfbInterface->SetCooperativeLevel(dfbInterface, DFSCL_FULLSCREEN));
 	
     
+    /* create primary surface with double buffering enabled */
     
-    /* clear the screen before drawing anything (draw black full screen rectangle)*/
+	surfaceDesc.flags = DSDESC_CAPS;
+	surfaceDesc.caps = DSCAPS_PRIMARY | DSCAPS_FLIPPING;
+	DFBCHECK (dfbInterface->CreateSurface(dfbInterface, &surfaceDesc, &primary));
     
+    
+    /* fetch the screen size */
+    DFBCHECK (primary->GetSize(primary, &screenWidth, &screenHeight));
+
+
     DFBCHECK(primary->SetColor(/*surface to draw on*/ primary,
                                /*red*/ 0x00,
                                /*green*/ 0x00,
                                /*blue*/ 0x00,
-                               /*alpha*/ 0xff)); //0xff je full neprozirno
-
-
+                               /*alpha*/ 0xff));
 	DFBCHECK(primary->FillRectangle(/*surface to draw on*/ primary,
                                     /*upper left x coordinate*/ 0,
                                     /*upper left y coordinate*/ 0,
                                     /*rectangle width*/ screenWidth,
-                                    /*rectangle height*/ screenHeight));
+                                    /*rectangle height*/ screenHeight));    
+    
+    /* clear the screen before drawing anything (draw black full screen rectangle)*/
+    
+    DFBCHECK(primary->SetColor(/*surface to draw on*/ primary,
+                               /*red*/ 0xff,
+                               /*green*/ 0xff,
+                               /*blue*/ 0x00,
+                               /*alpha*/ 0xff));
+	
+    DFBCHECK(primary->FillRectangle(/*surface to draw on*/ primary,
+                                    /*upper left x coordinate*/ screenWidth - 300,
+                                    /*upper left y coordinate*/ 100,
+                                    /*rectangle width*/ 200,
+                                    /*rectangle height*/ 200));
 
-   
 
-    fontDesc.flags = DFDESC_HEIGHT;
+        DFBCHECK(primary->SetColor(/*surface to draw on*/ primary,
+                               /*red*/ 0x00,
+                               /*green*/ 0x00,
+                               /*blue*/ 0xff,
+                               /*alpha*/ 0xff));
+	
+    DFBCHECK(primary->FillRectangle(/*surface to draw on*/ primary,
+                                    /*upper left x coordinate*/ 100,
+                                    /*upper left y coordinate*/ 100,
+                                    /*rectangle width*/ 100,
+                                    /*rectangle height*/ 100));
+    
+    
+    
+	/* line drawing */
+    
+	DFBCHECK(primary->SetColor(primary, 0xff, 0xff, 0xff, 0xff));
+	DFBCHECK(primary->DrawLine(primary,
+                               /*x coordinate of the starting point*/ 100,
+                               /*y coordinate of the starting point*/ screenHeight - 170,
+                               /*x coordinate of the ending point*/ screenWidth,
+                               /*y coordinate of the ending point*/ screenHeight - 170));
+	
+    
+	/* draw text */
+
+	IDirectFBFont *fontInterface = NULL;
+	DFBFontDescription fontDesc;
+	
+    /* specify the height of the font by raising the appropriate flag and setting the height value */
+	fontDesc.flags = DFDESC_HEIGHT;
 	fontDesc.height = 50;
 	
     /* create the font and set the created font for primary surface text drawing */
 	DFBCHECK(dfbInterface->CreateFont(dfbInterface, "/home/galois/fonts/DejaVuSans.ttf", &fontDesc, &fontInterface));
 	DFBCHECK(primary->SetFont(primary, fontInterface));
     
+	DFBCHECK(primary->SetColor(primary, 0xff, 0xff, 0xff, 0xff));
     /* draw the text */
 	DFBCHECK(primary->DrawString(primary,
-                                 /*text to be drawn*/ "broj",
-                                 /*number of bytes in the string, -1 for NULL terminated strings*/ 4,
-                                 /*x coordinate of the lower left corner of the resulting text*/ 150,
-                                 /*y coordinate of the lower left corner of the resulting text*/ 150,
-                                 /*in case of multiple lines, allign text to left*/ DSTF_LEFT));
+                                /*text to be drawn*/ "CRVENO",
+                             	/*number of bytes in the string, -1 for NULL terminated strings*/ -1,
+                                /*x coordinate of the lower left corner of the resulting text*/ screenWidth/2,
+                                /*y coordinate of the lower left corner of the resulting text*/ screenHeight - 200,
+                                /*in case of multiple lines, allign text to left*/ DSTF_CENTER));
+	
     
 
     
+	IDirectFBImageProvider *provider;
+	IDirectFBSurface *logoSurface = NULL;
+	int32_t logoHeight, logoWidth;
+	
+    /* create the image provider for the specified file */
+	DFBCHECK(dfbInterface->CreateImageProvider(dfbInterface, "dfblogo_alpha.png", &provider));
+    /* get surface descriptor for the surface where the image will be rendered */
+	DFBCHECK(provider->GetSurfaceDescription(provider, &surfaceDesc));
+    /* create the surface for the image */
+	DFBCHECK(dfbInterface->CreateSurface(dfbInterface, &surfaceDesc, &logoSurface));
+    /* render the image to the surface */
+	DFBCHECK(provider->RenderTo(provider, logoSurface, NULL));
+	
+    /* cleanup the provider after rendering the image to the surface */
+	provider->Release(provider);
+	
+    /* fetch the logo size and add (blit) it to the screen */
+	//DFBCHECK(logoSurface->GetSize(logoSurface, &logoWidth, &logoHeight));
+	//DFBCHECK(primary->Blit(primary,
+      //                     /*source surface*/ logoSurface,
+        //                   /*source region, NULL to blit the whole surface*/ NULL,
+          //                 /*destination x coordinate of the upper left corner of the image*/50,
+            //               /*destination y coordinate of the upper left corner of the image*/screenHeight - logoHeight -50));
+    
+    
+    /* switch between the displayed and the work buffer (update the display) */
+	DFBCHECK(primary->Flip(primary,
+                           /*region to be updated, NULL for the whole surface*/NULL,
+                           /*flip flags*/0));
     
     /* wait 5 seconds before terminating*/
-	sleep(30);
-	//fflush(stdin);
-    //getchar();
+	sleep(10);
+
     
     /*clean up*/
-   
+   	primary->Release(primary);
+	dfbInterface->Release(dfbInterface);
 }
 
 enum REMOTE_BUTTON {
@@ -129,7 +225,7 @@ void *myThreadRemote(){
         printf("Error allocating memory !");
         return NULL;
     }
-    
+    //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
     int volumeLevel = 0;
     int program = 0;
 

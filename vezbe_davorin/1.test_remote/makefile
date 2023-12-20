@@ -8,9 +8,20 @@ TOOLCHAIN_CROSS_COMPILE = $(PROJECTROOT)/toolchain/marvell/armv5-marvell-linux-g
 
 CC = $(TOOLCHAIN_CROSS_COMPILE)-gcc
 
-LIBS = -lpthread
+CFLAGS= -I. \
+        -I./include/ \
+        -I$(SDK_ROOTFS)/usr/include/ \
+        -I$(SDK_ROOTFS)/usr/include/directfb/
+        
+CFLAGS += -D__LINUX__ -O0 -Wno-psabi
 
-SRC = vezba_1.c remote.c 
+CXXFLAGS = $(CFLAGS) 
+
+LIBS_PATH += -L$(SDK_ROOTFS)/home/galois/lib/directfb-1.4-6-libs
+
+LIBS := $(LIBS_PATH) -ldirectfb -ldirect -lfusion -lrt
+
+SRC = vezba_1.c thread.c 
 OUT = $(PROJECTROOT)/ploca/vezba_1
 
 all: tuning_sample
@@ -20,3 +31,21 @@ tuning_sample:
     
 clean:
 	rm -f $(OUT)
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+
+
+
+
+
+
+
+

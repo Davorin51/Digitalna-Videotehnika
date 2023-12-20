@@ -3,6 +3,12 @@
         "DFBCHECK"
     ],
     "files.associations": {
-        "remote.h": "c"
+        "remote.h": "c",
+        "input.h": "c",
+        "stdio.h": "c",
+        "directfb.h": "c",
+        "fcntl.h": "c",
+        "stdint.h": "c",
+        "thread.h": "c"
     }
 }

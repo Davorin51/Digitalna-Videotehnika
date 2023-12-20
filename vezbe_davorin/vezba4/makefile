@@ -21,7 +21,7 @@ LIBS_PATH += -L$(SDK_ROOTFS)/home/galois/lib/directfb-1.4-6-libs
 
 LIBS := $(LIBS_PATH) -ldirectfb -ldirect -lfusion -lrt
 
-SRC= vezba_4.c
+SRC= vezba_4T.c
 
 all: dfb_example
 
