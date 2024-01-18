@@ -51,6 +51,14 @@ struct sigevent signalEvent2;
 
 struct itimerspec timerSpec2;
 struct itimerspec timerSpecOld2;
+timer_t timerId3;
+struct sigevent signalEvent3;
+struct itimerspec timerSpec3;
+timer_t timerId4;
+struct sigevent signalEvent4;
+struct itimerspec timerSpec4;
+
+
 int32_t timerFlags2 = 0;
 
 static IDirectFBSurface *primary = NULL;
@@ -72,6 +80,11 @@ void drawChannel(int, int, int);
 void drawVolume(int, int);
 void clearChannel();
 void clearVolume();
+void drawTime();
+void clearTimeDisplay();
+void drawReminderDialog(const char*, const char*, const char*, int);
+void scheduleReminder(int, int);
+void displayReminderDialog(union sigval);
 
 
 typedef struct{
@@ -220,6 +233,8 @@ int32_t main(int32_t argc, char** argv)
     
     gettimeofday(&now,NULL);
     lockStatusWaitTime.tv_sec = now.tv_sec+10;
+
+    
     
     /* Initialize tuner */
     result = Tuner_Init();
@@ -273,7 +288,7 @@ int32_t main(int32_t argc, char** argv)
         result = Demux_Free_Filter(playerHandle, filterHandle);
         ASSERT_TDP_RESULT(result, "Demux_Free_Filter");
     }
-
+    scheduleReminder(23, 34);
     pthread_create(&remote, NULL, &remoteThreadTask, NULL);
     DFBInit(&argc, &argv);
     timerInit();
@@ -287,6 +302,8 @@ int32_t main(int32_t argc, char** argv)
 	dfbInterface->Release(dfbInterface);
     timer_delete(timerId);
     timer_delete(timerId2);
+    timer_delete(timerId3);
+    timer_delete(timerId4);
     
     /* Close previously opened source */
     result = Player_Source_Close(playerHandle, sourceHandle);
@@ -331,6 +348,8 @@ void *remoteThreadTask()
     int mute = 0;
     int isRadio;
     int localChannel=1;
+    int highlight = 1;
+    int reminderActive = 0;
     
     inputFileDesc = open(dev, O_RDWR);
     if(inputFileDesc == -1)
@@ -367,6 +386,7 @@ void *remoteThreadTask()
                         //info
                         timer_settime(timerId,timerFlags,&timerSpec,&timerSpecOld);  
                         drawChannel(channel, 1, !(tablePMT[channel].videoPID));
+                        drawTime();
                         break;
                     }
                     case 60: {
@@ -618,6 +638,27 @@ void *remoteThreadTask()
                         }
                         break;
                     }
+                    case 105: {
+                         if (highlight == 1) {
+                               
+                                changeChannel(4);
+                            }
+                            // Clear the reminder dialog from the screen
+                            clearScreen();
+                            reminderActive = 0;
+                            break;
+                    }
+                    case 106 : {
+                        highlight = 1;
+                        drawReminderDialog("Reminder Activated! Switch to Channel 4?", "YES", "NO", highlight);
+                        break;
+                    }
+                    case 107: {
+                        highlight = 2;
+                        drawReminderDialog("Reminder Activated! Switch to Channel 4?", "YES", "NO", highlight);
+                        break;
+                    }
+
                     case 102:{
                         Player_Stream_Remove(playerHandle, sourceHandle, videoStreamHandle);
                         Player_Stream_Remove(playerHandle, sourceHandle, audioStreamHandle);
@@ -774,6 +815,12 @@ void timerInit(){
     timer_create(/*sistemski sat za mjerenje vremena*/ CLOCK_REALTIME,                
                 /*podešavanja timer-a*/ &signalEvent2,                      
             /*mjesto gdje će se smjestiti ID novog timer-a*/ &timerId2);
+
+    signalEvent4.sigev_notify = SIGEV_THREAD; 
+    signalEvent4.sigev_notify_function = displayReminderDialog; 
+    signalEvent4.sigev_value.sival_ptr = NULL; 
+    signalEvent4.sigev_notify_attributes = NULL; 
+    timer_create(CLOCK_REALTIME, &signalEvent4, &timerId4);
 
     //brisanje strukture prije setiranja vrijednosti
     memset(&timerSpec2,0,sizeof(timerSpec2));
@@ -981,6 +1028,143 @@ void clearVolume(){
                            /*flip flags*/0));
 }
 
+void clearTimeDisplay() {
+    // Assuming the time is displayed in the top right corner
+    int posX = screenWidth - 410;
+    int posY = 100;
+    int width = 200; // Width of the area to clear
+    int height = 200; // Height of the area to clear
+
+    DFBCHECK(primary->SetColor(primary, 0x00, 0x00, 0x00, 0x00));
+    DFBCHECK(primary->FillRectangle(primary, posX, posY, width, height));
+    DFBCHECK(primary->Flip(primary, NULL, 0));
+}
+
+void scheduleReminder(int remindAtHour, int remindAtMinute) {
+    struct timeval now;
+    struct timespec remindTimeSpec;
+
+    gettimeofday(&now, NULL);
+    struct tm *currentTime = localtime(&now.tv_sec);
+
+    // Calculate the number of seconds until the reminder time
+    int secondsUntilReminder = (remindAtHour - currentTime->tm_hour) * 3600 
+                               + (remindAtMinute - currentTime->tm_min) * 60 
+                               - currentTime->tm_sec;
+
+    // If the reminder time is in the past, set it for the next day
+    if (secondsUntilReminder < 0) {
+        secondsUntilReminder += 24 * 3600; // Add 24 hours
+    }
+
+    remindTimeSpec.tv_sec = now.tv_sec + secondsUntilReminder;
+    remindTimeSpec.tv_nsec = 0;
+
+    // Set the timer for the reminder
+    signalEvent4.sigev_notify = SIGEV_THREAD;
+    signalEvent4.sigev_notify_function = displayReminderDialog;
+    signalEvent4.sigev_value.sival_ptr = NULL;
+    signalEvent4.sigev_notify_attributes = NULL;
+    timer_create(CLOCK_REALTIME, &signalEvent4, &timerId4);
+
+    // Zero out the timerSpec4 structure before setting it
+    memset(&timerSpec4, 0, sizeof(timerSpec4));
+    timerSpec4.it_value.tv_sec = secondsUntilReminder;
+    timerSpec4.it_value.tv_nsec = 0;
+    
+    // Set the timer to be relative (TIMER_ABSTIME is for absolute time)
+    timer_settime(timerId4, 0, &timerSpec4, NULL);
+}
+
+
+
+
+void drawTime() {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    struct tm *t = localtime(&now.tv_sec);  // Convert time_t to struct tm
+
+    char timeStr[10];
+    strftime(timeStr, sizeof(timeStr)-1, "%H:%M", t);
+
+    // Positioning the rhombus in the top right corner
+    int posX = screenWidth - 210; // 210 pixels from the right edge
+    int posY = 100;  // 100 pixels from the top
+
+    // Set color for the rhombus
+    DFBCHECK(primary->SetColor(primary, 0x70, 0x00, 0x70, 0xff)); // Purple color
+
+    // Draw the rhombus
+    primary->FillTriangle(primary, posX, posY, posX + 100, posY + 100, posX - 100, posY + 100);
+    primary->FillTriangle(primary, posX, posY + 200, posX - 100, posY + 100, posX + 100, posY + 100);
+
+    // Set color for the text
+    DFBCHECK(primary->SetColor(primary, 0xff, 0xff, 0xff, 0xff)); // White color
+
+    // Set font size for the time text
+    fontDesc.height = 40; // Adjust font size if needed
+    DFBCHECK(dfbInterface->CreateFont(dfbInterface, "/home/galois/fonts/DejaVuSans.ttf", &fontDesc, &fontInterface));
+    DFBCHECK(primary->SetFont(primary, fontInterface));
+
+    // Draw the time string inside the rhombus
+    DFBCHECK(primary->DrawString(primary, timeStr, -1, posX, posY + 100, DSTF_CENTER));
+
+    // Flip the primary surface to update the display
+    DFBCHECK(primary->Flip(primary, NULL, 0));
+
+    signalEvent3.sigev_notify = SIGEV_THREAD;
+    signalEvent3.sigev_notify_function = clearTimeDisplay;
+    signalEvent3.sigev_value.sival_ptr = NULL;
+    signalEvent3.sigev_notify_attributes = NULL;
+    timer_create(CLOCK_REALTIME, &signalEvent3, &timerId3);
+
+    timerSpec3.it_value.tv_sec = 3; // 3 seconds
+    timerSpec3.it_value.tv_nsec = 0;
+    timer_settime(timerId3, 0, &timerSpec3, NULL);
+}
+
+void displayReminderDialog(union sigval sv) {
+    // Display the reminder dialog
+    drawReminderDialog("Reminder Activated! Switch to Channel 4?", "YES", "NO", 1);
+}
+
+
+void drawReminderDialog(const char* message, const char* firstOption, const char* secondOption, int highlight) {
+    int dialogWidth = 400;
+    int dialogHeight = 200;
+    int dialogX = screenWidth / 2 - dialogWidth / 2;
+    int dialogY = screenHeight / 2 - dialogHeight / 2;
+
+    // Draw the dialog background
+    DFBCHECK(primary->SetColor(primary, 0x70, 0x00, 0x70, 0xff)); // Adjust the color as needed
+    DFBCHECK(primary->FillRectangle(primary, dialogX, dialogY, dialogWidth, dialogHeight));
+
+    // Draw the message text
+    fontDesc.height = 24; // Adjust the font size as needed
+    DFBCHECK(dfbInterface->CreateFont(dfbInterface, "/home/galois/fonts/DejaVuSans.ttf", &fontDesc, &fontInterface));
+    DFBCHECK(primary->SetFont(primary, fontInterface));
+    DFBCHECK(primary->SetColor(primary, 0xff, 0xff, 0xff, 0xff));
+    DFBCHECK(primary->DrawString(primary, message, -1, dialogX + 20, dialogY + 50, DSTF_LEFT));
+
+    // Draw the options
+    DFBCHECK(primary->DrawString(primary, firstOption, -1, dialogX + 50, dialogY + 150, DSTF_LEFT));
+    DFBCHECK(primary->DrawString(primary, secondOption, -1, dialogX + 250, dialogY + 150, DSTF_LEFT));
+
+    // Highlight the selected option
+    if (highlight == 1) {
+        // Highlight first option
+        DFBCHECK(primary->DrawRectangle(primary, dialogX + 40, dialogY + 140, 100, 30));
+    } else {
+        // Highlight second option
+        DFBCHECK(primary->DrawRectangle(primary, dialogX + 240, dialogY + 140, 100, 30));
+    }
+
+    // Flip the primary surface to update the display
+    DFBCHECK(primary->Flip(primary, NULL, 0));
+}
+
+
+
 void drawChannel(int channel, int hasTTX, int isRadio){
     char str[10];
     sprintf(str, "%d", channel);
@@ -1134,6 +1318,11 @@ void drawChannel(int channel, int hasTTX, int isRadio){
                            /*region to be updated, NULL for the whole surface*/NULL,
                            /*flip flags*/0));
 }
+
+
+
+
+
 
 void drawVolume(int vol, int isRadio){
     
