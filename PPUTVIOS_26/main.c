@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <directfb.h>
 #include "tdp_api.h"
+#include <math.h>
 
 #define CONFIG_FILE "config.xml"
 #define NUM_EVENTS  5
@@ -129,6 +130,8 @@ int32_t getKeys(int32_t count, uint8_t* buf, int32_t* eventRead);
 static void *remoteThreadTask();
 static pthread_t remote;
 static int remoteFlag = 1;
+static int reminderActive = 1;
+static int highlight = 0;
 static inline void textColor(int32_t attr, int32_t fg, int32_t bg)
 {
    char command[13];
@@ -348,8 +351,8 @@ void *remoteThreadTask()
     int mute = 0;
     int isRadio;
     int localChannel=1;
-    int highlight = 1;
-    int reminderActive = 0;
+ //   int highlight = 1;
+ //   int reminderActive = 1;
     
     inputFileDesc = open(dev, O_RDWR);
     if(inputFileDesc == -1)
@@ -387,6 +390,8 @@ void *remoteThreadTask()
                         timer_settime(timerId,timerFlags,&timerSpec,&timerSpecOld);  
                         drawChannel(channel, 1, !(tablePMT[channel].videoPID));
                         drawTime();
+                        sleep(3);
+                        clearScreen();
                         break;
                     }
                     case 60: {
@@ -638,26 +643,37 @@ void *remoteThreadTask()
                         }
                         break;
                     }
+                    
                     case 105: {
-                         if (highlight == 1) {
-                               
-                                changeChannel(4);
-                            }
-                            // Clear the reminder dialog from the screen
-                            clearScreen();
-                            reminderActive = 0;
-                            break;
+                        if(reminderActive) {
+                            highlight = 1;
+                            drawReminderDialog("Reminder Activated! Switch to Channel 4?", "YES", "NO", highlight);
+                     }       
+                     break;
                     }
                     case 106 : {
-                        highlight = 1;
-                        drawReminderDialog("Reminder Activated! Switch to Channel 4?", "YES", "NO", highlight);
-                        break;
+                        if (reminderActive) {
+                            highlight = 2; // Highlight "NO"
+                            drawReminderDialog("Reminder Activated! Switch to Channel 4?", "YES", "NO", highlight);
+                        }
+                    break;
                     }
-                    case 107: {
-                        highlight = 2;
-                        drawReminderDialog("Reminder Activated! Switch to Channel 4?", "YES", "NO", highlight);
-                        break;
+                    case 108: {
+                        localChannel = 4;
+                        channel = localChannel;
+                    if (reminderActive && highlight == 1) {
+                        changeChannel(channel);
+                        reminderActive = 0;  // Reset the reminder active flag
+                        clearScreen();  // Clear the dialog from the screen
+                       
                     }
+                    else {
+                        sleep(15);
+                        clearScreen();
+                    }
+                     break;
+                    }
+                        
 
                     case 102:{
                         Player_Stream_Remove(playerHandle, sourceHandle, videoStreamHandle);
@@ -673,7 +689,9 @@ void *remoteThreadTask()
     free(eventBuf);
     
     return NO_ERROR;
-}
+ }
+ 
+
 
 parsePAT(uint8_t *buffer){
     tablePAT.sectionLength=(uint16_t)(((*(buffer+1)<<8)+*(buffer + 2)) & 0x0FFF);
@@ -1043,6 +1061,7 @@ void clearTimeDisplay() {
 void scheduleReminder(int remindAtHour, int remindAtMinute) {
     struct timeval now;
     struct timespec remindTimeSpec;
+    reminderActive = 1;
 
     gettimeofday(&now, NULL);
     struct tm *currentTime = localtime(&now.tv_sec);
@@ -1130,38 +1149,72 @@ void displayReminderDialog(union sigval sv) {
 
 
 void drawReminderDialog(const char* message, const char* firstOption, const char* secondOption, int highlight) {
-    int dialogWidth = 400;
-    int dialogHeight = 200;
-    int dialogX = screenWidth / 2 - dialogWidth / 2;
-    int dialogY = screenHeight / 2 - dialogHeight / 2;
+    // Define center of the screen
+    int centerX = screenWidth / 2;
+    int centerY = screenHeight / 2;
+    int size = 200;
+    int stretchFactor = 2.5; // Factor to stretch the rhombus horizontally
 
-    // Draw the dialog background
-    DFBCHECK(primary->SetColor(primary, 0x70, 0x00, 0x70, 0xff)); // Adjust the color as needed
-    DFBCHECK(primary->FillRectangle(primary, dialogX, dialogY, dialogWidth, dialogHeight));
 
-    // Draw the message text
-    fontDesc.height = 24; // Adjust the font size as needed
-    DFBCHECK(dfbInterface->CreateFont(dfbInterface, "/home/galois/fonts/DejaVuSans.ttf", &fontDesc, &fontInterface));
-    DFBCHECK(primary->SetFont(primary, fontInterface));
-    DFBCHECK(primary->SetColor(primary, 0xff, 0xff, 0xff, 0xff));
-    DFBCHECK(primary->DrawString(primary, message, -1, dialogX + 20, dialogY + 50, DSTF_LEFT));
-
-    // Draw the options
-    DFBCHECK(primary->DrawString(primary, firstOption, -1, dialogX + 50, dialogY + 150, DSTF_LEFT));
-    DFBCHECK(primary->DrawString(primary, secondOption, -1, dialogX + 250, dialogY + 150, DSTF_LEFT));
-
-    // Highlight the selected option
-    if (highlight == 1) {
-        // Highlight first option
-        DFBCHECK(primary->DrawRectangle(primary, dialogX + 40, dialogY + 140, 100, 30));
-    } else {
-        // Highlight second option
-        DFBCHECK(primary->DrawRectangle(primary, dialogX + 240, dialogY + 140, 100, 30));
+    // Define the size of the hexagon (distance from center to any vertex)
+    //int size = 100; // Change this value as needed for your desired size
+    int i;
+    // Calculate the vertices of the hexagon
+    DFBPoint vertices[6];
+    for (i = 0; i < 6; ++i) {
+         vertices[i].x = centerX + (size * cos(i * 2 * M_PI / 6)) * (i % 3 == 0 ? stretchFactor : 1);
+        vertices[i].y = centerY + size * sin(i * 2 * M_PI / 6);
     }
 
+    DFBCHECK(primary->SetColor(primary, 0x70, 0x00, 0x70, 0xff)); // Color for the hexagon
+    for (i = 0; i < 6; ++i) {
+        DFBCHECK(primary->FillTriangle(
+            primary,
+            centerX,
+            centerY,
+            vertices[i].x,
+            vertices[i].y,
+            vertices[(i + 1) % 6].x,
+            vertices[(i + 1) % 6].y
+        ));
+    }
+
+    // Define positions for YES and NO options inside the hexagon
+    int optionYesX = centerX - size / 4;
+    int optionNoX = centerX + size / 4;
+    int optionsY = centerY + size / 4;  // Vertical position is the same for both options
+
+
+    // Set font for text
+    fontDesc.height = 32;
+    DFBCHECK(dfbInterface->CreateFont(dfbInterface, "/home/galois/fonts/DejaVuSans.ttf", &fontDesc, &fontInterface));
+    DFBCHECK(primary->SetFont(primary, fontInterface));
+
+  // Draw the message text inside the hexagon
+    DFBCHECK(primary->SetColor(primary, 0xff, 0xff, 0xff, 0xff)); // White color for the text
+    int textYPos = centerY - (size * sin(1 * 2 * M_PI / 6)) / 2; // Adjust text position inside the rhombus
+    DFBCHECK(primary->DrawString(primary, message, -1, centerX, textYPos, DSTF_CENTER));
+
+     // Draw the first option (YES)
+    DFBCHECK(primary->SetColor(primary, highlight == 1 ? 0xff : 0xff, highlight == 1 ? 0xff : 0xff, highlight == 1 ? 0x00 : 0xff, 0xff));
+    DFBCHECK(primary->DrawString(primary, firstOption, -1, optionYesX, optionsY, DSTF_CENTER));
+
+    // Draw the second option (NO)
+    DFBCHECK(primary->SetColor(primary, highlight == 2 ? 0xff : 0xff, highlight == 2 ? 0xff : 0xff, highlight == 2 ? 0x00 : 0xff, 0xff));
+    DFBCHECK(primary->DrawString(primary, secondOption, -1, optionNoX, optionsY, DSTF_CENTER));
+
+ // Draw rectangles around options if highlighted
+    if (highlight == 1) {
+        // Rectangle around "YES"
+        DFBCHECK(primary->DrawRectangle(primary, optionYesX - size / 8, optionsY - fontDesc.height / 2, size / 4, fontDesc.height));
+    } else if (highlight == 2) {
+        // Rectangle around "NO"
+        DFBCHECK(primary->DrawRectangle(primary, optionNoX - size / 8, optionsY - fontDesc.height / 2, size / 4, fontDesc.height));
+    }
     // Flip the primary surface to update the display
     DFBCHECK(primary->Flip(primary, NULL, 0));
 }
+
 
 
 
