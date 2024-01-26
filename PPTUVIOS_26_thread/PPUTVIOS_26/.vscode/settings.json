@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "fcntl.h": "c",
+        "input.h": "c",
+        "global.h": "c",
+        "stdio.h": "c"
+    }
+}

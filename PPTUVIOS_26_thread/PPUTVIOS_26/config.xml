@@ -1,0 +1,19 @@
+<config>
+    <frequency>818000000</frequency>
+    <bandwidth>8</bandwidth>
+    <module>DVB-T</module>
+    <init_service>
+        <apid>103</apid>
+        <vpid>101</vpid>
+        <atype>ac3</atype>
+        <vtype>mpeg2</vtype>
+    </init_service>
+    <reminder>
+        <time>12:04</time>
+        <channel_index>2</channel_index>
+    </reminder>
+    <reminder>
+        <time>12:22</time>
+        <channel_index>4</channel_index>
+    </reminder>
+</config>
