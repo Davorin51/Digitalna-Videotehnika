@@ -83,7 +83,7 @@ void clearChannel();
 void clearVolume();
 void drawTime();
 void clearTimeDisplay();
-void drawReminderDialog(const char*, const char*, const char*, int);
+void drawReminderDialog(const char*, const char*, const char*, const char*, int);
 void scheduleReminder(int, int);
 void displayReminderDialog(union sigval);
 
@@ -291,7 +291,7 @@ int32_t main(int32_t argc, char** argv)
         result = Demux_Free_Filter(playerHandle, filterHandle);
         ASSERT_TDP_RESULT(result, "Demux_Free_Filter");
     }
-    scheduleReminder(23, 34);
+    scheduleReminder(23, 36);
     pthread_create(&remote, NULL, &remoteThreadTask, NULL);
     DFBInit(&argc, &argv);
     timerInit();
@@ -647,14 +647,14 @@ void *remoteThreadTask()
                     case 105: {
                         if(reminderActive) {
                             highlight = 1;
-                            drawReminderDialog("Reminder Activated! Switch to Channel 4?", "YES", "NO", highlight);
+                            drawReminderDialog("Reminder Activated!", "Switch to Channel 4?", "YES", "NO", highlight);
                      }       
                      break;
                     }
                     case 106 : {
                         if (reminderActive) {
                             highlight = 2; // Highlight "NO"
-                            drawReminderDialog("Reminder Activated! Switch to Channel 4?", "YES", "NO", highlight);
+                            drawReminderDialog("Reminder Activated!", "Switch to Channel 4?", "YES", "NO", highlight);
                         }
                     break;
                     }
@@ -1144,17 +1144,18 @@ void drawTime() {
 
 void displayReminderDialog(union sigval sv) {
     // Display the reminder dialog
-    drawReminderDialog("Reminder Activated! Switch to Channel 4?", "YES", "NO", 1);
+    drawReminderDialog("Reminder Activated!", "Switch to Channel 4?", "YES", "NO", 1);
 }
 
 
-void drawReminderDialog(const char* message, const char* firstOption, const char* secondOption, int highlight) {
+void drawReminderDialog(const char* messageLine1, const char* messageLine2, const char* firstOption, const char* secondOption, int highlight) {
     // Define center of the screen
     int centerX = screenWidth / 2;
     int centerY = screenHeight / 2;
     int size = 200;
     int stretchFactor = 2.5; // Factor to stretch the rhombus horizontally
-
+    int horizontalSide = 250;
+    int verticalSide = 180;
 
     // Define the size of the hexagon (distance from center to any vertex)
     //int size = 100; // Change this value as needed for your desired size
@@ -1166,7 +1167,7 @@ void drawReminderDialog(const char* message, const char* firstOption, const char
         vertices[i].y = centerY + size * sin(i * 2 * M_PI / 6);
     }
 
-    DFBCHECK(primary->SetColor(primary, 0x70, 0x00, 0x70, 0xff)); // Color for the hexagon
+    DFBCHECK(primary->SetColor(primary, 0x70, 0x00, 0x70, 0x80)); // Color for the hexagon
     for (i = 0; i < 6; ++i) {
         DFBCHECK(primary->FillTriangle(
             primary,
@@ -1190,10 +1191,15 @@ void drawReminderDialog(const char* message, const char* firstOption, const char
     DFBCHECK(dfbInterface->CreateFont(dfbInterface, "/home/galois/fonts/DejaVuSans.ttf", &fontDesc, &fontInterface));
     DFBCHECK(primary->SetFont(primary, fontInterface));
 
-  // Draw the message text inside the hexagon
+  // Calculate the vertical position offsets based on font size
+    int lineSpacing = fontDesc.height + 10; // 10 pixels spacing between lines
+    int firstLineY = centerY - verticalSide / 4; // Adjust as needed
+    int secondLineY = firstLineY + lineSpacing; // Position of second line
+
+    // Draw the message text
     DFBCHECK(primary->SetColor(primary, 0xff, 0xff, 0xff, 0xff)); // White color for the text
-    int textYPos = centerY - (size * sin(1 * 2 * M_PI / 6)) / 2; // Adjust text position inside the rhombus
-    DFBCHECK(primary->DrawString(primary, message, -1, centerX, textYPos, DSTF_CENTER));
+    DFBCHECK(primary->DrawString(primary, messageLine1, -1, centerX, firstLineY, DSTF_CENTER));
+    DFBCHECK(primary->DrawString(primary, messageLine2, -1, centerX, secondLineY, DSTF_CENTER));
 
      // Draw the first option (YES)
     DFBCHECK(primary->SetColor(primary, highlight == 1 ? 0xff : 0xff, highlight == 1 ? 0xff : 0xff, highlight == 1 ? 0x00 : 0xff, 0xff));
