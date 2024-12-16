@@ -23,11 +23,11 @@
 
 /* Helper macro for error checking */
 #define ASSERT_TDP_RESULT(x,y)  if(NO_ERROR == x) \
-                                        printf("%s success\n", y); \
-                                    else{ \
-                                        printf("%s fail\n", y); \
-                                        return -1; \
-                                    }
+                                            printf("%s uspješno\n", y); \
+                                        else{ \
+                                            printf("%s neuspješno\n", y); \
+                                            return -1; \
+                                        }
 
 /* Strukture za PAT i PMT tablice */
 typedef struct{
@@ -67,6 +67,7 @@ int channel = 1;
 pthread_mutex_t statusMutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t statusCondition = PTHREAD_COND_INITIALIZER;
 
+/* Strukture za inicijalizaciju tunera i streamova */
 typedef struct {
     int bandwidth;
     int frequency;
@@ -104,32 +105,45 @@ void parse(char *filename, tunerData *tuner, initService *init){
     FILE *fptr;
     fptr = fopen(filename,"r");
     if(fptr){
-        fgets(line, sizeof(line), fptr);
-        fgets(line, sizeof(line), fptr);
-        strtok(line, ">");
-        tuner->frequency = atoi(strtok(NULL, "<"));
-        fgets(line, sizeof(line), fptr);
-        strtok(line, ">");
-        tuner->bandwidth = atoi(strtok(NULL, "<"));  
-        fgets(line, sizeof(line), fptr);
-        strtok(line, ">");
-        token = strtok(NULL, "<");
-        sprintf(tuner->module, "%s", token);
-        fgets(line, sizeof(line), fptr);
-        fgets(line, sizeof(line), fptr);
-        strtok(line, ">");
-        init->audioPID = atoi(strtok(NULL, "<"));
-        fgets(line, sizeof(line), fptr);
-        strtok(line, ">");
-        init->videoPID = atoi(strtok(NULL, "<"));
-        fgets(line, sizeof(line), fptr);
-        strtok(line, ">");
-        token = strtok(NULL, "<");
-        sprintf(init->audioType, "%s", token);
-        fgets(line, sizeof(line), fptr);
-        strtok(line, ">");
-        token = strtok(NULL, "<");
-        sprintf(init->videoType, "%s", token);
+        // Ovisno o formatu config.xml, prilagodite čitanje
+        // Ovo je primjer parsiranja XML-a jednostavnim linijskim čitanjem
+        while(fgets(line, sizeof(line), fptr)){
+            if(strstr(line, "<frequency>")){
+                token = strtok(line, ">");
+                token = strtok(NULL, "<");
+                tuner->frequency = atoi(token);
+            }
+            else if(strstr(line, "<bandwidth>")){
+                token = strtok(line, ">");
+                token = strtok(NULL, "<");
+                tuner->bandwidth = atoi(token);
+            }
+            else if(strstr(line, "<module>")){
+                token = strtok(line, ">");
+                token = strtok(NULL, "<");
+                strncpy(tuner->module, token, sizeof(tuner->module));
+            }
+            else if(strstr(line, "<audioPID>")){
+                token = strtok(line, ">");
+                token = strtok(NULL, "<");
+                init->audioPID = atoi(token);
+            }
+            else if(strstr(line, "<videoPID>")){
+                token = strtok(line, ">");
+                token = strtok(NULL, "<");
+                init->videoPID = atoi(token);
+            }
+            else if(strstr(line, "<audioType>")){
+                token = strtok(line, ">");
+                token = strtok(NULL, "<");
+                strncpy(init->audioType, token, sizeof(init->audioType));
+            }
+            else if(strstr(line, "<videoType>")){
+                token = strtok(line, ">");
+                token = strtok(NULL, "<");
+                strncpy(init->videoType, token, sizeof(init->videoType));
+            }
+        }
     }
     fclose(fptr);
 }
@@ -142,11 +156,11 @@ int32_t myPrivateTunerStatusCallback(t_LockStatus status)
         pthread_mutex_lock(&statusMutex);
         pthread_cond_signal(&statusCondition);
         pthread_mutex_unlock(&statusMutex);
-        printf("\n\n\tCALLBACK LOCKED\n\n");
+        printf("\n\n\tTuner je zaključan na frekvenciju.\n\n");
     }
     else
     {
-        printf("\n\n\tCALLBACK NOT LOCKED\n\n");
+        printf("\n\n\tTuner nije zaključan.\n\n");
     }
     return 0;
 }
@@ -169,22 +183,37 @@ void parsePAT(uint8_t *buffer){
     tablePAT.transportStream = (uint16_t)(((*(buffer+3) << 8) + *(buffer + 4)));
     tablePAT.versionNumber = (uint8_t)((*(buffer+5) >> 1) & 0x1F);
     
-    channelCount = (tablePAT.sectionLength * 8 - 64) / 32;
+    // Izračunavanje broja kanala na osnovu sectionLength
+    // Ovo je pojednostavljeno i može zahtijevati prilagodbu
+    channelCount = (tablePAT.sectionLength - 9) / 4; // Svaki kanal zauzima 4 bajta
+    if(channelCount > 8) channelCount = 8; // Ograničenje na 8 kanala
+    
     int i = 0;
     
     for(; i < channelCount; i++){
         tablePAT.programNumber[i] = (uint16_t)(*(buffer + (i * 4) + 8) << 8) + (*(buffer + (i * 4) + 9));
         tablePAT.PID[i] = (uint16_t)((*(buffer + (i * 4) + 10) << 8) + *(buffer + (i * 4) + 11)) & 0x1FFF;
-        printf("Channel %d\tPID: %d\n", tablePAT.programNumber[i], tablePAT.PID[i]);
+        printf("Kanal %d\tPID: %d\n", tablePAT.programNumber[i], tablePAT.PID[i]);
     }
-    printf("\n\nPAT Parsed: Section Length: %d, TS ID: %d, Version: %d, Channel Count: %d\n", 
+    printf("\n\nPAT Parsiran: Section Length: %d, TS ID: %d, Verzija: %d, Broj Kanala: %d\n", 
             tablePAT.sectionLength, tablePAT.transportStream, tablePAT.versionNumber, channelCount);
 }
 
 /* Funkcija za parsiranje PMT tablice */
 void parsePMT(uint8_t *buffer){
     parseFlag = 0;
-    int currentChannel = 0; // Potrebno prilagoditi ako imate više kanala
+    // Pronalazak kanala na koji se odnosi PMT
+    int currentChannel = -1;
+    for(int i = 0; i < channelCount; i++){
+        if(tablePAT.PID[i] == ((buffer[0] == 0x02) ? tablePAT.PID[i] : 0)){ // Provjera PID-a
+            currentChannel = i;
+            break;
+        }
+    }
+    if(currentChannel == -1){
+        currentChannel = 0; // Default kanal ako nije pronađen
+    }
+    
     tablePMT[currentChannel].sectionLength = (uint16_t)(((*(buffer+1) << 8) + *(buffer + 2)) & 0x0FFF);
     tablePMT[currentChannel].programNumber = (uint16_t)((*(buffer+3) << 8) + *(buffer + 4));
     tablePMT[currentChannel].programInfoLength = (uint16_t)(((*(buffer+10) << 8) + *(buffer + 11)) & 0x0FFF);
@@ -192,12 +221,12 @@ void parsePMT(uint8_t *buffer){
     tablePMT[currentChannel].hasTTX = 0;
     int j;
     
-    printf("\n\nPMT Parsed for Channel %d: Section Length: %d, Program Number: %d, Program Info Length: %d\n", 
-            currentChannel, tablePMT[currentChannel].sectionLength, tablePMT[currentChannel].programNumber, tablePMT[currentChannel].programInfoLength);
+    printf("\n\nPMT Parsiran za Kanal %d: Section Length: %d, Program Number: %d, Program Info Length: %d\n", 
+            currentChannel+1, tablePMT[currentChannel].sectionLength, tablePMT[currentChannel].programNumber, tablePMT[currentChannel].programInfoLength);
     
     uint8_t *m_buffer = buffer + 12 + tablePMT[currentChannel].programInfoLength;
     
-    for (j = 0; ((uint16_t)(m_buffer - buffer) + 5 < tablePMT[currentChannel].sectionLength); j++)
+    for (j = 0; ((m_buffer - buffer) + 5 < tablePMT[currentChannel].sectionLength); j++)
     {
         tablePMT[currentChannel].streams[j].streamType = *(m_buffer);
         tablePMT[currentChannel].streams[j].elementaryPID = ((*(m_buffer+1) << 8) + *(m_buffer+2)) & 0x1FFF;
@@ -217,7 +246,7 @@ void parsePMT(uint8_t *buffer){
            tablePMT[currentChannel].streams[j].descriptor == 86)
             tablePMT[currentChannel].hasTTX = 1;
         
-        printf("Stream Type: %d, EPID: %d, Length: %d, Descriptor: %d\n", 
+        printf("Stream Tip: %d, EPID: %d, Duljina: %d, Descriptor: %d\n", 
                 tablePMT[currentChannel].streams[j].streamType, 
                 tablePMT[currentChannel].streams[j].elementaryPID, 
                 tablePMT[currentChannel].streams[j].esInfoLength, 
@@ -225,15 +254,15 @@ void parsePMT(uint8_t *buffer){
         m_buffer += 5 + tablePMT[currentChannel].streams[j].esInfoLength;
         tablePMT[currentChannel].streamCount++;
     }
-    printf("Total Streams: %d, Has TTX: %d\n", tablePMT[currentChannel].streamCount, tablePMT[currentChannel].hasTTX);
+    printf("Ukupan broj Streamova: %d, Ima TTX: %d\n", tablePMT[currentChannel].streamCount, tablePMT[currentChannel].hasTTX);
 }
 
 /* Funkcija za promjenu kanala */
 void changeChannel(int channel){
     int videoPID, audioPID;
 
-    audioPID = tablePMT[channel].audioPID;
-    videoPID = tablePMT[channel].videoPID;
+    audioPID = tablePMT[channel-1].audioPID;
+    videoPID = tablePMT[channel-1].videoPID;
 
     if(videoStreamHandle){
         Player_Stream_Remove(playerHandle, sourceHandle, videoStreamHandle);
@@ -249,7 +278,7 @@ void changeChannel(int channel){
         videoStreamHandle = 0;
         Player_Stream_Create(playerHandle, sourceHandle, audioPID, AUDIO_TYPE_MPEG_AUDIO, &audioStreamHandle);
     }
-    printf("Switched to Channel %d\n", channel);
+    printf("Prebaceno na Kanal %d\n", channel);
 }
 
 /* Funkcija za čitanje tipki sa daljinskog upravljača */
@@ -261,7 +290,7 @@ int32_t getKeys(int32_t count, uint8_t* buf, int32_t* eventsRead)
     ret = read(inputFileDesc, buf, (size_t)(count * (int)sizeof(struct input_event)));
     if(ret <= 0)
     {
-        printf("Error code %d", ret);
+        printf("Greška kod čitanja input događaja: %d\n", ret);
         return ERROR;
     }
     /* Izračunavanje broja pročitanih događaja */
@@ -273,27 +302,26 @@ int32_t getKeys(int32_t count, uint8_t* buf, int32_t* eventsRead)
 /* Niti za upravljanje daljinskim upravljačem */
 void *remoteThreadTask()
 {
-    const char* dev = "/dev/input/event0";
+    const char* dev = "/dev/input/event0"; // Provjerite točan uređaj
     char deviceName[256];
     struct input_event* eventBuf;
     uint32_t eventCnt;
     uint32_t i;
-    int parseResult;
     
     inputFileDesc = open(dev, O_RDONLY);
     if(inputFileDesc == -1)
     {
-        printf("Error while opening device (%s) !\n", strerror(errno));
+        printf("Greška prilikom otvaranja uređaja (%s)!\n", strerror(errno));
         pthread_exit(NULL);
     }
     
     ioctl(inputFileDesc, EVIOCGNAME(sizeof(deviceName)), deviceName);
-    printf("RC device opened successfully [%s]\n", deviceName);
+    printf("Daljinski upravljač otvoren uspješno [%s]\n", deviceName);
     
     eventBuf = malloc(NUM_EVENTS * sizeof(struct input_event));
     if(!eventBuf)
     {
-        printf("Error allocating memory !\n");
+        printf("Greška prilikom alociranja memorije!\n");
         close(inputFileDesc);
         pthread_exit(NULL);
     }
@@ -303,7 +331,7 @@ void *remoteThreadTask()
         /* Čitanje input događaja */
         if(getKeys(NUM_EVENTS, (uint8_t*)eventBuf, &eventCnt))
         {
-            printf("Error while reading input events !\n");
+            printf("Greška prilikom čitanja input događaja!\n");
             break;
         }
         
@@ -314,27 +342,27 @@ void *remoteThreadTask()
                 
                 switch (eventBuf[i].code){
                     case KEY_INFO: { // Zamijenite s odgovarajućim kodom tipke
-                        printf("INFO button pressed\n");
+                        printf("INFO tipka pritisnuta\n");
                         // Implementirajte željenu funkcionalnost
                         break;
                     }
                     case KEY_MUTE: { // Zamijenite s odgovarajućim kodom tipke
-                        printf("MUTE button pressed\n");
-                        // Implementirajte željenu funkcionalnost
+                        printf("MUTE tipka pritisnuta\n");
+                        // Implementirajte željenu funkcionalnost (npr., mute zvuka)
                         break;
                     }
                     case KEY_VOLUMEUP: { // Zamijenite s odgovarajućim kodom tipke
-                        printf("Volume Up button pressed\n");
+                        printf("Volume Up tipka pritisnuta\n");
                         // Implementirajte povećanje zvuka
                         break;
                     }
                     case KEY_VOLUMEDOWN: { // Zamijenite s odgovarajućim kodom tipke
-                        printf("Volume Down button pressed\n");
+                        printf("Volume Down tipka pritisnuta\n");
                         // Implementirajte smanjenje zvuka
                         break;
                     }
                     case KEY_CHANNELUP: {
-                        if(channel >= channelCount-1){
+                        if(channel >= channelCount){
                             channel = 1;
                         } else{
                             channel++;
@@ -344,7 +372,7 @@ void *remoteThreadTask()
                     }
                     case KEY_CHANNELDOWN: {
                         if(channel == 1){
-                            channel = channelCount-1;
+                            channel = channelCount;
                         }
                         else{
                             channel--;
@@ -357,6 +385,7 @@ void *remoteThreadTask()
                     case KEY_7: case KEY_8: case KEY_9:
                     case KEY_0: {
                         int pressedKey = eventBuf[i].code - KEY_1 + 1;
+                        if(pressedKey == 0) pressedKey = 10; // Ako je 0 za kanal 10
                         if(pressedKey >=1 && pressedKey <= channelCount){
                             channel = pressedKey;
                             changeChannel(channel);
@@ -364,7 +393,7 @@ void *remoteThreadTask()
                         break;
                     }
                     case KEY_EXIT: { // Zamijenite s odgovarajućim kodom tipke za izlaz
-                        printf("Exit button pressed\n");
+                        printf("EXIT tipka pritisnuta\n");
                         // Zaustavite aplikaciju
                         goto cleanup;
                         break;
@@ -391,14 +420,14 @@ int32_t main(int32_t argc, char** argv)
     
     /* Parsiranje konfiguracijske datoteke */
     parse(CONFIG_FILE, &data, &init);
-    printf("Frequency: %d\n", data.frequency);
-    printf("Bandwidth: %d\n", data.bandwidth);
-    printf("Module: %s\n", data.module);
+    printf("Frekvencija: %d\n", data.frequency);
+    printf("Širina pojasa: %d\n", data.bandwidth);
+    printf("Modul: %s\n", data.module);
 
     printf("Audio PID: %d\n", init.audioPID);
     printf("Video PID: %d\n", init.videoPID);
-    printf("Audio Type: %s\n", init.audioType);
-    printf("Video Type: %s\n", init.videoType);
+    printf("Audio Tip: %s\n", init.audioType);
+    printf("Video Tip: %s\n", init.videoType);
     
     /* Inicijalizacija tunera */
     result = Tuner_Init();
@@ -433,11 +462,11 @@ int32_t main(int32_t argc, char** argv)
     result = Demux_Register_Section_Filter_Callback(mySecFilterCallback);
     ASSERT_TDP_RESULT(result, "Demux_Register_Section_Filter_Callback");
     
-    /* Kreiranje streamova za video i audio */
+    /* Kreiranje streamova za početni kanal */
     Player_Stream_Create(playerHandle, sourceHandle, init.videoPID, VIDEO_TYPE_MPEG2, &videoStreamHandle);
     Player_Stream_Create(playerHandle, sourceHandle, init.audioPID, AUDIO_TYPE_MPEG_AUDIO, &audioStreamHandle);
     
-    /* Podesavanje zvuka */
+    /* Postavljanje početne glasnoće */
     Player_Volume_Set(playerHandle, 20 * 10000000);
     sleep(1);
     
@@ -446,19 +475,25 @@ int32_t main(int32_t argc, char** argv)
     ASSERT_TDP_RESULT(result, "Demux_Free_Filter (PAT)");
     
     /* Postavljanje filtera za PMT za svaki kanal */
-    for(int i = 1; i < channelCount; i++){
+    for(int i = 1; i <= channelCount; i++){
         parseFlag = 1;
-        result = Demux_Set_Filter(playerHandle, tablePAT.PID[i], 0x02, &filterHandle);
+        result = Demux_Set_Filter(playerHandle, tablePAT.PID[i-1], 0x02, &filterHandle);
         ASSERT_TDP_RESULT(result, "Demux_Set_Filter (PMT)");
-        while(parseFlag); // Čekanje dok se PMT ne parsira
+        // Čekanje dok se PMT ne parsira
+        while(parseFlag){
+            usleep(100000); // 100ms
+        }
         result = Demux_Free_Filter(playerHandle, filterHandle);
         ASSERT_TDP_RESULT(result, "Demux_Free_Filter (PMT)");
     }
     
     /* Kreiranje niti za upravljanje daljinskim upravljačem */
-    pthread_create(&remote, NULL, &remoteThreadTask, NULL);
+    if(pthread_create(&remote, NULL, &remoteThreadTask, NULL)){
+        printf("Greška prilikom kreiranja niti za daljinski upravljač!\n");
+        // Nastaviti ili zaustaviti aplikaciju
+    }
     
-    /* Čekanje da nit za daljinski upravljač završi */
+    /* Glavna nit može obavljati druge zadatke ili čekati da se nit za daljinski upravljač završi */
     pthread_join(remote, NULL);
     
     /* De-inicijalizacija */
