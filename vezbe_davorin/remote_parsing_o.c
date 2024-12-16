@@ -23,11 +23,11 @@
 
 /* Helper macro for error checking */
 #define ASSERT_TDP_RESULT(x,y)  if(NO_ERROR == x) \
-                                            printf("%s uspješno\n", y); \
-                                        else{ \
-                                            printf("%s neuspješno\n", y); \
-                                            return -1; \
-                                        }
+                                                printf("%s uspješno\n", y); \
+                                            else{ \
+                                                printf("%s neuspješno\n", y); \
+                                                return -1; \
+                                            }
 
 /* Strukture za PAT i PMT tablice */
 typedef struct{
@@ -96,7 +96,7 @@ int32_t result;
 uint32_t playerHandle = 0;
 uint32_t sourceHandle = 0;
 uint32_t filterHandle = 0;
-int videoStreamHandle, audioStreamHandle;
+int videoStreamHandle = 0, audioStreamHandle = 0;
 
 /* Funkcija za parsiranje konfiguracijske datoteke */
 void parse(char *filename, tunerData *tuner, initService *init){
@@ -122,6 +122,7 @@ void parse(char *filename, tunerData *tuner, initService *init){
                 token = strtok(line, ">");
                 token = strtok(NULL, "<");
                 strncpy(tuner->module, token, sizeof(tuner->module));
+                tuner->module[sizeof(tuner->module)-1] = '\0'; // Osiguravanje NULL terminacije
             }
             else if(strstr(line, "<audioPID>")){
                 token = strtok(line, ">");
@@ -137,11 +138,13 @@ void parse(char *filename, tunerData *tuner, initService *init){
                 token = strtok(line, ">");
                 token = strtok(NULL, "<");
                 strncpy(init->audioType, token, sizeof(init->audioType));
+                init->audioType[sizeof(init->audioType)-1] = '\0';
             }
             else if(strstr(line, "<videoType>")){
                 token = strtok(line, ">");
                 token = strtok(NULL, "<");
                 strncpy(init->videoType, token, sizeof(init->videoType));
+                init->videoType[sizeof(init->videoType)-1] = '\0';
             }
         }
     }
@@ -179,6 +182,11 @@ int32_t mySecFilterCallback(uint8_t *buffer){
 
 /* Funkcija za parsiranje PAT tablice */
 void parsePAT(uint8_t *buffer){
+    if(buffer == NULL){
+        printf("Buffer je NULL u parsePAT.\n");
+        return;
+    }
+
     tablePAT.sectionLength = (uint16_t)(((*(buffer+1) << 8) + *(buffer + 2)) & 0x0FFF);
     tablePAT.transportStream = (uint16_t)(((*(buffer+3) << 8) + *(buffer + 4)));
     tablePAT.versionNumber = (uint8_t)((*(buffer+5) >> 1) & 0x1F);
@@ -201,21 +209,32 @@ void parsePAT(uint8_t *buffer){
 
 /* Funkcija za parsiranje PMT tablice */
 void parsePMT(uint8_t *buffer){
+    if(buffer == NULL){
+        printf("Buffer je NULL u parsePMT.\n");
+        return;
+    }
+
     parseFlag = 0;
-    // Pronalazak kanala na koji se odnosi PMT
+
+    // Extract program_number from PMT
+    uint16_t program_number = (buffer[3] << 8) | buffer[4];
+
+    // Find the channel index that matches the program_number
     int currentChannel = -1;
     for(int i = 0; i < channelCount; i++){
-        if(tablePAT.PID[i] == ((buffer[0] == 0x02) ? tablePAT.PID[i] : 0)){ // Provjera PID-a
+        if(tablePAT.programNumber[i] == program_number){
             currentChannel = i;
             break;
         }
     }
+
     if(currentChannel == -1){
-        currentChannel = 0; // Default kanal ako nije pronađen
+        printf("PMT program_number %d ne odgovara nijednom PAT program_number.\n", program_number);
+        return;
     }
-    
+
     tablePMT[currentChannel].sectionLength = (uint16_t)(((*(buffer+1) << 8) + *(buffer + 2)) & 0x0FFF);
-    tablePMT[currentChannel].programNumber = (uint16_t)((*(buffer+3) << 8) + *(buffer + 4));
+    tablePMT[currentChannel].programNumber = program_number;
     tablePMT[currentChannel].programInfoLength = (uint16_t)(((*(buffer+10) << 8) + *(buffer + 11)) & 0x0FFF);
     tablePMT[currentChannel].streamCount = 0;
     tablePMT[currentChannel].hasTTX = 0;
@@ -228,6 +247,11 @@ void parsePMT(uint8_t *buffer){
     
     for (j = 0; ((m_buffer - buffer) + 5 < tablePMT[currentChannel].sectionLength); j++)
     {
+        if(j >= 15){
+            printf("Previše streamova za Kanal %d. Odbacujem dodatne.\n", currentChannel+1);
+            break;
+        }
+
         tablePMT[currentChannel].streams[j].streamType = *(m_buffer);
         tablePMT[currentChannel].streams[j].elementaryPID = ((*(m_buffer+1) << 8) + *(m_buffer+2)) & 0x1FFF;
         tablePMT[currentChannel].streams[j].esInfoLength = ((*(m_buffer+3) << 8) + *(m_buffer+4)) & 0x0FFF;
@@ -259,6 +283,11 @@ void parsePMT(uint8_t *buffer){
 
 /* Funkcija za promjenu kanala */
 void changeChannel(int channel){
+    if(channel < 1 || channel > channelCount){
+        printf("Nevažeći broj kanala: %d\n", channel);
+        return;
+    }
+
     int videoPID, audioPID;
 
     audioPID = tablePMT[channel-1].audioPID;
@@ -271,12 +300,21 @@ void changeChannel(int channel){
     Player_Stream_Remove(playerHandle, sourceHandle, audioStreamHandle);
 
     if(videoPID){
-        Player_Stream_Create(playerHandle, sourceHandle, videoPID, VIDEO_TYPE_MPEG2, &videoStreamHandle);
-        Player_Stream_Create(playerHandle, sourceHandle, audioPID, AUDIO_TYPE_MPEG_AUDIO, &audioStreamHandle);
+        result = Player_Stream_Create(playerHandle, sourceHandle, videoPID, VIDEO_TYPE_MPEG2, &videoStreamHandle);
+        if(result != NO_ERROR){
+            printf("Neuspjelo kreiranje video streama za Kanal %d.\n", channel);
+        }
+        result = Player_Stream_Create(playerHandle, sourceHandle, audioPID, AUDIO_TYPE_MPEG_AUDIO, &audioStreamHandle);
+        if(result != NO_ERROR){
+            printf("Neuspjelo kreiranje audio streama za Kanal %d.\n", channel);
+        }
     }
     else{
         videoStreamHandle = 0;
-        Player_Stream_Create(playerHandle, sourceHandle, audioPID, AUDIO_TYPE_MPEG_AUDIO, &audioStreamHandle);
+        result = Player_Stream_Create(playerHandle, sourceHandle, audioPID, AUDIO_TYPE_MPEG_AUDIO, &audioStreamHandle);
+        if(result != NO_ERROR){
+            printf("Neuspjelo kreiranje audio streama za Kanal %d.\n", channel);
+        }
     }
     printf("Prebaceno na Kanal %d\n", channel);
 }
@@ -354,11 +392,15 @@ void *remoteThreadTask()
                     case KEY_VOLUMEUP: { // Zamijenite s odgovarajućim kodom tipke
                         printf("Volume Up tipka pritisnuta\n");
                         // Implementirajte povećanje zvuka
+                        // Na primjer:
+                        // increaseVolume();
                         break;
                     }
                     case KEY_VOLUMEDOWN: { // Zamijenite s odgovarajućim kodom tipke
                         printf("Volume Down tipka pritisnuta\n");
                         // Implementirajte smanjenje zvuka
+                        // Na primjer:
+                        // decreaseVolume();
                         break;
                     }
                     case KEY_CHANNELUP: {
@@ -463,11 +505,15 @@ int32_t main(int32_t argc, char** argv)
     ASSERT_TDP_RESULT(result, "Demux_Register_Section_Filter_Callback");
     
     /* Kreiranje streamova za početni kanal */
-    Player_Stream_Create(playerHandle, sourceHandle, init.videoPID, VIDEO_TYPE_MPEG2, &videoStreamHandle);
-    Player_Stream_Create(playerHandle, sourceHandle, init.audioPID, AUDIO_TYPE_MPEG_AUDIO, &audioStreamHandle);
+    result = Player_Stream_Create(playerHandle, sourceHandle, init.videoPID, VIDEO_TYPE_MPEG2, &videoStreamHandle);
+    ASSERT_TDP_RESULT(result, "Player_Stream_Create (Video)");
+    
+    result = Player_Stream_Create(playerHandle, sourceHandle, init.audioPID, AUDIO_TYPE_MPEG_AUDIO, &audioStreamHandle);
+    ASSERT_TDP_RESULT(result, "Player_Stream_Create (Audio)");
     
     /* Postavljanje početne glasnoće */
-    Player_Volume_Set(playerHandle, 20 * 10000000);
+    result = Player_Volume_Set(playerHandle, 20 * 10000000);
+    ASSERT_TDP_RESULT(result, "Player_Volume_Set");
     sleep(1);
     
     /* Oslobađanje filtera za PAT */
@@ -497,8 +543,11 @@ int32_t main(int32_t argc, char** argv)
     pthread_join(remote, NULL);
     
     /* De-inicijalizacija */
-    Player_Stream_Remove(playerHandle, sourceHandle, videoStreamHandle);
-    Player_Stream_Remove(playerHandle, sourceHandle, audioStreamHandle);
+    result = Player_Stream_Remove(playerHandle, sourceHandle, videoStreamHandle);
+    ASSERT_TDP_RESULT(result, "Player_Stream_Remove (Video)");
+    
+    result = Player_Stream_Remove(playerHandle, sourceHandle, audioStreamHandle);
+    ASSERT_TDP_RESULT(result, "Player_Stream_Remove (Audio)");
     
     /* Zatvaranje izvora */
     result = Player_Source_Close(playerHandle, sourceHandle);
