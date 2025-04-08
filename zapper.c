@@ -33,10 +33,10 @@
  * Provjerite realne kodove tipki na vašem uređaju!
  * ---------------------------------------------------------------------------*/
 #ifndef KEY_CHANNELUP
-#define KEY_CHANNELUP   0x193
+#define KEY_CHANNELUP   61
 #endif
 #ifndef KEY_CHANNELDOWN
-#define KEY_CHANNELDOWN 0x194
+#define KEY_CHANNELDOWN 62
 #endif
 
 /* Maksimalan broj programa koje ćemo spremiti iz PAT-a */
