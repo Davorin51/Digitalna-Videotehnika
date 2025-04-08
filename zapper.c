@@ -31,10 +31,10 @@ static int32_t mySecFilterCallback(uint8_t *buffer);
 
 /* Pretpostavka da su definisani KEY_CHANNELUP i KEY_CHANNELDOWN */
 #ifndef KEY_CHANNELUP
-#define KEY_CHANNELUP   0x193
+#define KEY_CHANNELUP   61
 #endif
 #ifndef KEY_CHANNELDOWN
-#define KEY_CHANNELDOWN 0x194
+#define KEY_CHANNELDOWN 62
 #endif
 
 #define MAX_PROGRAMS  20
