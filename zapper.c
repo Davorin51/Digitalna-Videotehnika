@@ -1,15 +1,15 @@
 /******************************************************************************
- * zapper_demo.c
+ * zapper_full.c
  *
- * Demonstracijski kod koji:
- * 1) Locka tuner na 818 MHz.
- * 2) Postavlja filter na PAT (PID=0x0000), parsira je (mySecFilterCallback).
- * 3) Kad se PAT parsira, dohvaća prvi program -> postavlja filter za taj PMT
- * 4) Parsira PMT, pokreće audio/video
- * 5) U drugom threadu prati daljinski (CH+/CH-), i pri promjeni kanala postavlja
- *    novi PMT filter, pa se iz PMT uzmu novi audio/video PID-ovi i puste.
- * 6) Ispisuje info o kanalu (index, pmt pid, audio i video pid).
+ * Demonstracijski kod "Zapper" koji:
+ *  1) Zaključava tuner na 818 MHz,
+ *  2) Postavlja PAT filter (PID=0x0000), parsira PAT,
+ *  3) Kod odabranog kanala postavlja PMT filter, parsira PMT,
+ *  4) Kreira i pokreće Audio/Video stream,
+ *  5) U odvojenom threadu sluša CH+/CH- na daljinskom i mijenja kanale,
+ *  6) Prikazuje OSD info o kanalu (DirectFB).
  ******************************************************************************/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,198 +22,228 @@
 #include <sys/time.h>
 #include <time.h>
 
-/* TDP API */
+/* DirectFB */
+#include <directfb.h>
+
+/* TDP API (prilagodite include putanju) */
 #include "tdp_api.h"
 
-/* Koristimo Vaše funkcije za parse PMT i PAT */
-static void parsePMT(uint8_t *buffer);
-static int32_t mySecFilterCallback(uint8_t *buffer);
-
-/* Pretpostavka da su definisani KEY_CHANNELUP i KEY_CHANNELDOWN */
+/* ----------------------------------------------------------------------------
+ * Definicije tipki daljinskog (ako nisu već definirane)
+ * Provjerite realne kodove tipki na vašem uređaju!
+ * ---------------------------------------------------------------------------*/
 #ifndef KEY_CHANNELUP
-#define KEY_CHANNELUP   61
+#define KEY_CHANNELUP   0x193
 #endif
 #ifndef KEY_CHANNELDOWN
-#define KEY_CHANNELDOWN 62
+#define KEY_CHANNELDOWN 0x194
 #endif
 
+/* Maksimalan broj programa koje ćemo spremiti iz PAT-a */
 #define MAX_PROGRAMS  20
 
+/* Struktura za spremanje (program_number, pmtPid) iz PAT-a */
 typedef struct {
     uint16_t programNumber;
     uint16_t pmtPid;
 } ProgramInfo_t;
 
-/* Globalne varijable za popis programa iz PAT-a */
+/* Globalni popis programa */
 static ProgramInfo_t gProgramList[MAX_PROGRAMS];
-static int gNumPrograms = 0;
-static int gCurrentProgramIndex = 0;
+static int           gNumPrograms          = 0;  /* Koliko je programa pronađeno u PAT-u */
+static int           gCurrentProgramIndex  = 0;  /* Koji je program trenutačno aktivan */
 
-/* Za Tuner lock uslovnu varijablu */
+/* Za Tuner lock uvjetnu varijablu */
 static pthread_cond_t  gTunerLockCond  = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t gTunerLockMutex = PTHREAD_MUTEX_INITIALIZER;
 
-/* Player i Demux */
-static uint32_t gPlayerHandle  = 0;
-static uint32_t gSourceHandle  = 0;
-static uint32_t gPatFilterHandle = 0; 
-static uint32_t gPmtFilterHandle = 0;
+/* TDP: Player i Demux handle-ovi */
+static uint32_t gPlayerHandle     = 0;
+static uint32_t gSourceHandle     = 0;
+static uint32_t gPatFilterHandle  = 0;
+static uint32_t gPmtFilterHandle  = 0;
 
-/* Audio i Video handle */
+/* Audio i Video stream handle-ovi */
 static uint32_t gAudioStreamHandle = 0;
 static uint32_t gVideoStreamHandle = 0;
 
-/* Daljinski FD */
+/* File descriptor za daljinski (/dev/input/event0) */
 static int gInputFd = -1;
 
-/* Funkcije unaprijed: */
-static int32_t tunerStatusCallback(t_LockStatus status);
+/* DirectFB globalni pokazivači */
+static IDirectFB         *gDfbInterface   = NULL;
+static IDirectFBSurface  *gPrimarySurface = NULL;
+static IDirectFBFont     *gFontInterface  = NULL;
+static int                gScreenWidth    = 0;
+static int                gScreenHeight   = 0;
+
+/* Frekvencija i parametri DVB-T */
+#define DESIRED_FREQUENCY 818000000
+#define BANDWIDTH         8
+
+/* ----------------------------------------------------------------------------
+ * Deklaracije funkcija (tuner callback, demux callback, parsePAT, parsePMT)
+ * ---------------------------------------------------------------------------*/
+static int32_t  tunerStatusCallback(t_LockStatus status);
+static int32_t  mySecFilterCallback(uint8_t *buffer);
+static void     parsePAT(uint8_t *buffer);
+static void     parsePMT(uint8_t *buffer);
 
 /* Thread za daljinski */
-static void* remoteControlThread(void* arg);
+static void*    remoteControlThread(void *arg);
 
-/* Pomocna za postavljanje PMT filtera za trenutno izabrani kanal */
-static void switchToChannel(int channelIndex);
+/* Funkcija za prelazak na drugi kanal (postavljanje PMT filtera) */
+static void     switchToChannel(int channelIndex);
 
-/* Frekvencija i parametri */
-#define DESIRED_FREQUENCY 818000000
-#define BANDWIDTH 8
+/* Inicijalizacija/gašenje DirectFB */
+static int      initDirectFB(void);
+static void     deinitDirectFB(void);
+
+/* Funkcija za kratki OSD prikaz info (kanal, PIDs) na 3-5 sekundi */
+static void     showChannelInfoOSD(int channelIndex,
+                                   uint16_t pmtPid,
+                                   uint16_t audioPid,
+                                   uint16_t videoPid);
 
 /* ----------------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------------*/
-int main(void)
+int main(int argc, char **argv)
 {
     struct timespec lockStatusWaitTime;
-    struct timeval now;
-    int32_t result;
+    struct timeval  now;
+    int32_t         result;
 
-    /* 0) Otvaranje daljinskog /dev/input/event0 */
+    /* 1) Otvaranje daljinskog /dev/input/event0 */
     gInputFd = open("/dev/input/event0", O_RDWR);
     if (gInputFd < 0) {
-        printf("Greska pri otvaranju /dev/input/event0: %s\n", strerror(errno));
+        fprintf(stderr, "Greska pri otvaranju /dev/input/event0: %s\n", strerror(errno));
         return -1;
     }
 
-    gettimeofday(&now,NULL);
-    lockStatusWaitTime.tv_sec = now.tv_sec+10;
-       
-    /* 1) Tuner init */
+    /* 2) Inicijalizacija tunera */
     if (Tuner_Init() != 0) {
-        printf("Tuner_Init fail!\n");
+        fprintf(stderr, "Tuner_Init fail!\n");
         close(gInputFd);
         return -1;
     }
-    
-    /* 2) Registriraj tuner status callback */
+
+    /* 3) Registriramo callback za lock status */
     if (Tuner_Register_Status_Callback(tunerStatusCallback) != 0) {
-        printf("Tuner_Register_Status_Callback fail!\n");
+        fprintf(stderr, "Tuner_Register_Status_Callback fail!\n");
         Tuner_Deinit();
         close(gInputFd);
         return -1;
     }
-    
-    /* 3) Lock na 818 MHz */
+
+    /* 4) Lock na željenu frekvenciju (818 MHz, DVB-T, bw=8) */
     if (Tuner_Lock_To_Frequency(DESIRED_FREQUENCY, BANDWIDTH, DVB_T) != 0) {
-        printf("Tuner_Lock_To_Frequency fail!\n");
+        fprintf(stderr, "Tuner_Lock_To_Frequency fail!\n");
         Tuner_Deinit();
         close(gInputFd);
         return -1;
     }
-    
-    /* Cekamo max 10 sek da se tuner locka */
+
+    /* 5) Čekamo do 10 sekundi da tuner javi STATUS_LOCKED */
+    gettimeofday(&now, NULL);
+    lockStatusWaitTime.tv_sec = now.tv_sec + 10;
+
     pthread_mutex_lock(&gTunerLockMutex);
     int rc = pthread_cond_timedwait(&gTunerLockCond, &gTunerLockMutex, &lockStatusWaitTime);
     pthread_mutex_unlock(&gTunerLockMutex);
 
     if (rc == ETIMEDOUT) {
-        printf("Lock timeout!\n");
-        Tuner_Deinit();
-        close(gInputFd);
-        return -1;
-    }
-    
-    /* 4) Player init */
-    result = Player_Init(&gPlayerHandle);
-    if (result != NO_ERROR) {
-        printf("Player_Init fail!\n");
+        fprintf(stderr, "Timeout čekanja na lock!\n");
         Tuner_Deinit();
         close(gInputFd);
         return -1;
     }
 
-    /* Open source */
+    /* 6) Inicijalizacija Player-a */
+    result = Player_Init(&gPlayerHandle);
+    if (result != NO_ERROR) {
+        fprintf(stderr, "Player_Init fail!\n");
+        Tuner_Deinit();
+        close(gInputFd);
+        return -1;
+    }
+
+    /* 7) Otvori izvor (source) */
     result = Player_Source_Open(gPlayerHandle, &gSourceHandle);
     if (result != NO_ERROR) {
-        printf("Player_Source_Open fail!\n");
+        fprintf(stderr, "Player_Source_Open fail!\n");
         Player_Deinit(gPlayerHandle);
         Tuner_Deinit();
         close(gInputFd);
         return -1;
     }
-    
-    /* 5) Registriramo sekcijski filter callback i postavimo filter na PAT */
+
+    /* 8) Postavimo callback za sekcijske filtere i postavimo filter za PAT (PID=0x0000, table_id=0x00) */
     result = Demux_Register_Section_Filter_Callback(mySecFilterCallback);
     if (result != NO_ERROR) {
-        printf("Demux_Register_Section_Filter_Callback fail!\n");
+        fprintf(stderr, "Demux_Register_Section_Filter_Callback fail!\n");
         // cleanup...
         return -1;
     }
 
-    /* PAT PID=0x0000, table_id=0x00 */
     result = Demux_Set_Filter(gPlayerHandle, 0x0000, 0x00, &gPatFilterHandle);
     if (result != NO_ERROR) {
-        printf("Demux_Set_Filter (PAT) fail!\n");
+        fprintf(stderr, "Demux_Set_Filter(PAT) fail!\n");
         // cleanup...
         return -1;
     }
 
-    /* 6) Pokrecemo thread za daljinski (CH+/CH-) */
+    /* 9) Pokrenemo thread za daljinski (CH+/CH-) */
     pthread_t rThread;
     pthread_create(&rThread, NULL, remoteControlThread, NULL);
 
-    /* 7) Pricekamo da stigne PAT i da se parsira (u mySecFilterCallback). 
-          Ovdje moze “cekaj Enter” ili sl. Za demo: */
+    /* 10) Inicijaliziramo DirectFB (za OSD), ako želimo prikaz na ekranu */
+    if (initDirectFB() != 0) {
+        fprintf(stderr, "initDirectFB fail - nastavljamo možda bez OSD-a.\n");
+    }
+
+    /* 11) Sačekamo da se PAT parsira (u callbacku). Za demo – “pritisnite ENTER”. */
     printf("Cekamo da se PAT parsira... Pritisnite ENTER kada je stigla.\n");
     getchar();
 
     if (gNumPrograms == 0) {
-        printf("PAT nije parsirana ili nema programa!\n");
+        printf("Nema programa u PAT-u ili PAT nije parsirano.\n");
     } else {
-        /* Prelazimo na prvi kanal */
+        /* Prelazimo na prvi kanal (index=0) */
         switchToChannel(0);
     }
 
-    /* 8) Program radi dok ne pritisnete ENTER opet */
+    /* 12) Program “radi” dok ne pritisnete ENTER drugi put */
     printf("Pritisni ENTER za kraj...\n");
     getchar();
 
-    /* 9) Gasimo thread */
+    /* 13) Gasimo thread za daljinski */
     pthread_cancel(rThread);
     pthread_join(rThread, NULL);
 
-    /* 10) De-inicijalizacija: 
-       - Free PMT filter
-       - Free PAT filter
-       - Stop/Remove audio/video
-       - Player_Source_Close, Player_Deinit
-       - Tuner_Deinit
-       - Close remote FD
+    /* 14) Deinit redom: 
+          - PMT filter
+          - PAT filter
+          - Audio/Video stream remove
+          - Player_Source_Close, Player_Deinit
+          - Tuner_Deinit
+          - DirectFB Deinit
+          - close remote FD
     */
-    if (gPmtFilterHandle != 0) {
+    if (gPmtFilterHandle) {
         Demux_Free_Filter(gPlayerHandle, gPmtFilterHandle);
         gPmtFilterHandle = 0;
     }
-    if (gPatFilterHandle != 0) {
+    if (gPatFilterHandle) {
         Demux_Free_Filter(gPlayerHandle, gPatFilterHandle);
         gPatFilterHandle = 0;
     }
 
-    if (gAudioStreamHandle != 0) {
+    if (gAudioStreamHandle) {
         Player_Stream_Remove(gPlayerHandle, gSourceHandle, gAudioStreamHandle);
         gAudioStreamHandle = 0;
     }
-    if (gVideoStreamHandle != 0) {
+    if (gVideoStreamHandle) {
         Player_Stream_Remove(gPlayerHandle, gSourceHandle, gVideoStreamHandle);
         gVideoStreamHandle = 0;
     }
@@ -221,6 +251,7 @@ int main(void)
     Player_Source_Close(gPlayerHandle, gSourceHandle);
     Player_Deinit(gPlayerHandle);
     Tuner_Deinit();
+    deinitDirectFB();
     close(gInputFd);
 
     printf("Zavrseno.\n");
@@ -228,7 +259,7 @@ int main(void)
 }
 
 /* ----------------------------------------------------------------------------
- * Callback za tuner lock
+ * tunerStatusCallback - kad Tuner javi STATUS_LOCKED/NOT_LOCKED
  * ---------------------------------------------------------------------------*/
 static int32_t tunerStatusCallback(t_LockStatus status)
 {
@@ -244,109 +275,110 @@ static int32_t tunerStatusCallback(t_LockStatus status)
 }
 
 /* ----------------------------------------------------------------------------
- * mySecFilterCallback - dobivamo sekcije (PAT ili PMT) ovisno o PID i table_id
+ * mySecFilterCallback - dolaze sekcije (PAT, PMT) na pid i table_id za koji je filter
  * ---------------------------------------------------------------------------*/
 static int32_t mySecFilterCallback(uint8_t *buffer)
 {
     if (!buffer) return -1;
 
-    uint8_t table_id = buffer[0];
+    uint8_t  table_id       = buffer[0];
     uint16_t section_length = ((buffer[1] & 0x0F) << 8) | buffer[2];
 
-    printf("\n\n[mySecFilterCallback] Section arrived, table_id=0x%X, length=%d\n",
+    printf("\n[mySecFilterCallback] Section arrived, table_id=0x%X, length=%d\n",
            table_id, section_length);
 
     if (table_id == 0x00) {
         /* PAT */
-        uint32_t i;
-        uint16_t program_number, pid;
-        
-        /* Ocitamo broj programa iz (section_length-9)/4 - to je tipicno u PAT */
-        /* offset: 8 + i*4 dobijamo program_number i PID */
-        gNumPrograms = 0;
-        for (i = 0; i < (section_length - 9)/4; i++) {
-            program_number = (buffer[8 + i*4] << 8) | buffer[9 + i*4];
-            pid = ((buffer[10 + i*4] & 0x1F) << 8) | buffer[11 + i*4];
-
-            if (program_number == 0) {
-                // network PID
-                printf("Network PID: %u\n", pid);
-            } else {
-                printf("Program number=%u, PMT PID=%u\n", program_number, pid);
-                if (gNumPrograms < MAX_PROGRAMS) {
-                    gProgramList[gNumPrograms].programNumber = program_number;
-                    gProgramList[gNumPrograms].pmtPid = pid;
-                    gNumPrograms++;
-                }
-            }
-        }
+        parsePAT(buffer);
     }
     else if (table_id == 0x02) {
         /* PMT */
-        /* Pozivamo parsePMT iz Vašeg koda */
         parsePMT(buffer);
     }
     else {
-        printf("Druga tablica (table_id=0x%X), ne parsiramo.\n", table_id);
+        printf("Nismo implementirali parse za table_id=0x%X\n", table_id);
     }
 
     return 0;
 }
 
 /* ----------------------------------------------------------------------------
- * parsePMT - Vaša funkcija
- * Ovde dopunjena da dohvati A/V PID i pusti stream
+ * parsePAT - minimalno dohvaca (programNumber, pmtPid)
  * ---------------------------------------------------------------------------*/
-void parsePMT(uint8_t *buffer)
+static void parsePAT(uint8_t *buffer)
 {
-    /* Identicna je definicija iz Vaseg snippet-a, 
-       ali cemo dopuniti da prepoznamo i ispisemo audioPid/videoPid i 
-       pokrenemo stream. */
+    /* Kod dvb standarda, offset 8 i 9 su program_number, offset 10 i 11 su PMT pid (13 bit) */
+    /* section_length = (buffer[1]&0x0F)<<8 | buffer[2] */
+    uint16_t section_length = ((buffer[1] & 0x0F) << 8) | buffer[2];
+    uint32_t i;
+    uint16_t program_number, pid;
 
-    uint8_t  *current_buffer_position = NULL;
-    uint32_t parsed_length = 0;
-    uint8_t  elementaryInfoCount = 0;
+    gNumPrograms = 0;
 
-    uint16_t sectionLength = (((*(buffer+1)) << 8) + *(buffer+2)) & 0x0FFF;
-    uint16_t programInfoLength = ((*(buffer+10) << 8) + *(buffer+11)) & 0x0FFF;
+    for (i = 0; i < (section_length - 9)/4; i++) {
+        program_number = (buffer[8 + i*4] << 8) | buffer[9 + i*4];
+        pid            = ((buffer[10 + i*4] & 0x1F) << 8) | buffer[11 + i*4];
 
-    printf("PMT: sectionLength=%d, programInfoLength=%d\n", sectionLength, programInfoLength);
+        if (program_number == 0) {
+            /* network PID */
+            printf("Network PID = %u\n", pid);
+        } else {
+            printf("Program number=%u, PMT pid=%u\n", program_number, pid);
+            if (gNumPrograms < MAX_PROGRAMS) {
+                gProgramList[gNumPrograms].programNumber = program_number;
+                gProgramList[gNumPrograms].pmtPid        = pid;
+                gNumPrograms++;
+            }
+        }
+    }
+    printf("parsePAT: pronadjeno %d programa.\n", gNumPrograms);
+}
 
-    parsed_length = 12 + programInfoLength + 4 - 3; 
-    /* -3 ??? - to je Vaš stari offset. U praksi treba točno pratiti standard,
-       ali ostavimo kako Vam je radilo. */
-
-    current_buffer_position = (uint8_t *)(buffer + 12 + programInfoLength);
+/* ----------------------------------------------------------------------------
+ * parsePMT - pronadje audio i video pid (minimalni primjer)
+ *            i kreira streamove
+ * ---------------------------------------------------------------------------*/
+static void parsePMT(uint8_t *buffer)
+{
+    uint16_t sectionLength    = ((buffer[1] & 0x0F) << 8) | buffer[2];
+    uint16_t programInfoLen   = ((buffer[10] & 0x0F) << 8) | buffer[11];
+    uint8_t *currentPos       = (uint8_t*)(buffer + 12 + programInfoLen);
+    uint32_t parsedLength     = 12 + programInfoLen + 4 - 3; /* -3 je iz Vašeg primjera */
+    uint8_t  elementaryCount  = 0;
 
     uint16_t foundAudioPid = 0;
     uint16_t foundVideoPid = 0;
 
-    while (parsed_length < sectionLength && elementaryInfoCount < 20) {
+    printf("parsePMT: sectionLength=%u, programInfoLength=%u\n", sectionLength, programInfoLen);
 
-        uint16_t streamType = current_buffer_position[0];
-        uint16_t elementaryPid = ((current_buffer_position[1] & 0x1F) << 8) 
-                                  | current_buffer_position[2];
-        uint16_t esInfoLength = ((current_buffer_position[3] & 0x0F) << 8) 
-                                 | current_buffer_position[4];
+    while (parsedLength < sectionLength && elementaryCount < 20) {
+        uint8_t  streamType   = currentPos[0];
+        uint16_t elementaryPid= ((currentPos[1] & 0x1F) << 8) | currentPos[2];
+        uint16_t esInfoLength = ((currentPos[3] & 0x0F) << 8) | currentPos[4];
 
-        printf("streamType=0x%X, pid=%u, esInfoLength=%d\n",
+        printf(" streamType=0x%X, pid=%u, esInfoLength=%u\n",
                streamType, elementaryPid, esInfoLength);
 
-        /* Za demo: prepoznajmo tip: 0x02 (MPEG2 video), 0x03/0x04 (MPEG audio), 0x1B (H.264) itd. */
-        if ( (streamType == 0x02) && (foundVideoPid == 0) ) {
+        /* Prepoznajemo neke osnovne streamove */
+        if (streamType == 0x02 && foundVideoPid == 0) {
+            /* MPEG2 Video */
             foundVideoPid = elementaryPid;
-        } else if ((streamType == 0x03 || streamType == 0x04) && (foundAudioPid == 0)) {
+        } else if ((streamType == 0x03 || streamType == 0x04) && foundAudioPid == 0) {
+            /* MPEG Audio */
             foundAudioPid = elementaryPid;
+        } else if (streamType == 0x1B && foundVideoPid == 0) {
+            /* H.264 / AVC video */
+            foundVideoPid = elementaryPid;
         }
-        /* Pomak */
-        current_buffer_position += 5 + esInfoLength;
-        parsed_length += 5 + esInfoLength;
-        elementaryInfoCount++;
+        /* Pomak na sljedeći ES descriptor */
+        currentPos    += 5 + esInfoLength;
+        parsedLength  += 5 + esInfoLength;
+        elementaryCount++;
     }
 
-    printf("U PMT pronadjeno: AudioPid=%u, VideoPid=%u\n", foundAudioPid, foundVideoPid);
+    printf("PMT: pronadjen AudioPid=%u, VideoPid=%u\n", foundAudioPid, foundVideoPid);
 
-    /* Zaustavimo stare streamove pa napravimo nove */
+    /* Zaustavimo stare streamove (ako postoje) */
     if (gAudioStreamHandle) {
         Player_Stream_Remove(gPlayerHandle, gSourceHandle, gAudioStreamHandle);
         gAudioStreamHandle = 0;
@@ -356,60 +388,59 @@ void parsePMT(uint8_t *buffer)
         gVideoStreamHandle = 0;
     }
 
-    /* Ako nadjemo video pid, kreiramo stream (tip -> VIDEO_TYPE_MPEG2 itd. 
-       Ovisi kakav je streamType, za punu točnost treba prepoznati i H.264 i sl.)
-    */
+    /* Kreiramo video stream (ako pronađen) */
     if (foundVideoPid) {
-        Player_Stream_Create(gPlayerHandle, 
-                             gSourceHandle, 
-                             foundVideoPid, 
-                             VIDEO_TYPE_MPEG2,  /* ili VIDEO_TYPE_H264 ako je 0x1B */
+        /* Ovdje za 0x02 (MPEG2) -> VIDEO_TYPE_MPEG2, za 0x1B -> VIDEO_TYPE_H264 itd. 
+           Jednostavno cemo uvijek stavljati VIDEO_TYPE_MPEG2, 
+           ali realno treba prepoznati streamType. */
+        Player_Stream_Create(gPlayerHandle, gSourceHandle, foundVideoPid,
+                             VIDEO_TYPE_MPEG2, /* prilagodite prema stvarnom streamTypeu */
                              &gVideoStreamHandle);
-        if (gVideoStreamHandle)
-            printf("Video stream start (pid=%u)\n", foundVideoPid);
     }
 
-    /* Audio pid */
+    /* Kreiramo audio stream (ako pronađen) */
     if (foundAudioPid) {
-        Player_Stream_Create(gPlayerHandle,
-                             gSourceHandle,
-                             foundAudioPid,
-                             AUDIO_TYPE_MPEG_AUDIO,  /* ili AUDIO_TYPE_AAC, AC3, sl. */
+        Player_Stream_Create(gPlayerHandle, gSourceHandle, foundAudioPid,
+                             AUDIO_TYPE_MPEG_AUDIO, /* prilagodite ako je npr. AAC/AC3 */
                              &gAudioStreamHandle);
-        if (gAudioStreamHandle)
-            printf("Audio stream start (pid=%u)\n", foundAudioPid);
     }
 
-    /* Ispišemo info o kanalu */
-    printf("***** Promjena kanala: idx=%d, PMT pid=%u, A_pid=%u, V_pid=%u *****\n",
-           gCurrentProgramIndex, 
+    /* Ispiši info (i na OSD) */
+    printf("***** KANAL idx=%d, PMT pid=%u, A_pid=%u, V_pid=%u *****\n",
+           gCurrentProgramIndex,
            gProgramList[gCurrentProgramIndex].pmtPid,
            foundAudioPid,
            foundVideoPid);
 
-    /* Ako želite “nakon 5s skloniti informacije”, možete jednostavno pauzirati 5s 
-       ili to riješiti s nekom OSD bibliotekom. Ovdje samo console ispis. */
+    /* Prikažemo info na ekranu npr. 3 sekunde */
+    showChannelInfoOSD(gCurrentProgramIndex,
+                       gProgramList[gCurrentProgramIndex].pmtPid,
+                       foundAudioPid,
+                       foundVideoPid);
 }
 
 /* ----------------------------------------------------------------------------
- * remoteControlThread - čitanje CH+/CH- s daljinskog
+ * remoteControlThread - beskonačna petlja za CH+/CH- tipke
  * ---------------------------------------------------------------------------*/
-static void* remoteControlThread(void* arg)
+static void* remoteControlThread(void *arg)
 {
     struct input_event events[8];
 
     while (1) {
         int n = read(gInputFd, events, sizeof(events));
         if (n > 0) {
-            int count = n / sizeof(struct input_event);
-            for (int i=0; i<count; i++) {
-                if ((events[i].type == EV_KEY) && (events[i].value == 1)) {
+            int count = n / (int)sizeof(struct input_event);
+
+            for (int i = 0; i < count; i++) {
+                if (events[i].type == EV_KEY && events[i].value == 1) {
+                    /* value=1 -> pritisak tipke */
                     if (events[i].code == KEY_CHANNELUP) {
                         printf("[Remote] CH+\n");
                         if (gNumPrograms > 0) {
                             gCurrentProgramIndex++;
-                            if (gCurrentProgramIndex >= gNumPrograms) 
+                            if (gCurrentProgramIndex >= gNumPrograms) {
                                 gCurrentProgramIndex = 0;
+                            }
                             switchToChannel(gCurrentProgramIndex);
                         }
                     }
@@ -417,8 +448,9 @@ static void* remoteControlThread(void* arg)
                         printf("[Remote] CH-\n");
                         if (gNumPrograms > 0) {
                             gCurrentProgramIndex--;
-                            if (gCurrentProgramIndex < 0)
+                            if (gCurrentProgramIndex < 0) {
                                 gCurrentProgramIndex = gNumPrograms - 1;
+                            }
                             switchToChannel(gCurrentProgramIndex);
                         }
                     }
@@ -427,30 +459,164 @@ static void* remoteControlThread(void* arg)
         }
         usleep(50000); /* 50 ms */
     }
-
     return NULL;
 }
 
 /* ----------------------------------------------------------------------------
- * switchToChannel - postavlja filter na PMT kanala s indexom 'channelIndex'
+ * switchToChannel - postavljanje PMT filtera za odabrani kanal
  * ---------------------------------------------------------------------------*/
 static void switchToChannel(int channelIndex)
 {
     if (channelIndex < 0 || channelIndex >= gNumPrograms) return;
 
-    /* Oslobodi stari PMT filter ako postoji */
-    if (gPmtFilterHandle != 0) {
+    /* Oslobodi stari PMT filter */
+    if (gPmtFilterHandle) {
         Demux_Free_Filter(gPlayerHandle, gPmtFilterHandle);
         gPmtFilterHandle = 0;
     }
 
-    /* Postavi PMT filter na pmtPid za dati kanal */
     uint16_t pmtPid = gProgramList[channelIndex].pmtPid;
-    printf("switchToChannel: idx=%d, pmtPid=%u\n", channelIndex, pmtPid);
+    printf("switchToChannel: idx=%d, PMT pid=%u\n", channelIndex, pmtPid);
 
-    /* table_id za PMT je 0x02 */
-    int32_t res = Demux_Set_Filter(gPlayerHandle, pmtPid, 0x02, &gPmtFilterHandle);
-    if (res != NO_ERROR) {
+    /* Postavimo filter za PMT (table_id=0x02) */
+    if (Demux_Set_Filter(gPlayerHandle, pmtPid, 0x02, &gPmtFilterHandle) != NO_ERROR) {
         printf("Demux_Set_Filter PMT fail (pid=%u)!\n", pmtPid);
     }
+}
+
+/* ----------------------------------------------------------------------------
+ * initDirectFB - inicijalizacija DirectFB i kreiranje primary surface
+ * ---------------------------------------------------------------------------*/
+static int initDirectFB(void)
+{
+    DFBResult            ret;
+    DFBSurfaceDescription dsc;
+    DFBFontDescription    fontDesc;
+    int                  argc = 0;
+    char               **argv = NULL;
+
+    /* 1) DirectFBInit bez argumenata */
+    ret = DirectFBInit(&argc, &argv);
+    if (ret != DFB_OK) {
+        fprintf(stderr, "DirectFBInit fail!\n");
+        return -1;
+    }
+
+    /* 2) Kreiraj DF interface */
+    ret = DirectFBCreate(&gDfbInterface);
+    if (ret != DFB_OK) {
+        fprintf(stderr, "DirectFBCreate fail!\n");
+        return -1;
+    }
+
+    /* 3) Fullscreen cooperative level */
+    ret = gDfbInterface->SetCooperativeLevel(gDfbInterface, DFSCL_FULLSCREEN);
+    if (ret != DFB_OK) {
+        fprintf(stderr, "SetCooperativeLevel fail!\n");
+        return -1;
+    }
+
+    /* 4) Primary surface s flipping */
+    memset(&dsc, 0, sizeof(dsc));
+    dsc.flags = DSDESC_CAPS;
+    dsc.caps  = DSCAPS_PRIMARY | DSCAPS_FLIPPING;
+
+    ret = gDfbInterface->CreateSurface(gDfbInterface, &dsc, &gPrimarySurface);
+    if (ret != DFB_OK) {
+        fprintf(stderr, "CreateSurface fail!\n");
+        return -1;
+    }
+
+    /* 5) Dimenzije ekrana */
+    gPrimarySurface->GetSize(gPrimarySurface, &gScreenWidth, &gScreenHeight);
+    printf("DirectFB screen: %dx%d\n", gScreenWidth, gScreenHeight);
+
+    /* 6) Učitavanje fonta (po potrebi) */
+    fontDesc.flags  = DFDESC_HEIGHT;
+    fontDesc.height = 36;  /* Veličina fonta */
+
+    ret = gDfbInterface->CreateFont(gDfbInterface, "/usr/share/fonts/DejaVuSans.ttf",
+                                    &fontDesc, &gFontInterface);
+    if (ret == DFB_OK) {
+        gPrimarySurface->SetFont(gPrimarySurface, gFontInterface);
+    } else {
+        fprintf(stderr, "CreateFont fail! (Ako nemate font, preskocite)\n");
+        gFontInterface = NULL;
+    }
+
+    /* Očisti ekran na crno */
+    gPrimarySurface->SetColor(gPrimarySurface, 0x00, 0x00, 0x00, 0xFF);
+    gPrimarySurface->FillRectangle(gPrimarySurface, 0, 0, gScreenWidth, gScreenHeight);
+    gPrimarySurface->Flip(gPrimarySurface, NULL, 0);
+
+    return 0;
+}
+
+/* ----------------------------------------------------------------------------
+ * deinitDirectFB - oslobađa surface, font i DF interface
+ * ---------------------------------------------------------------------------*/
+static void deinitDirectFB(void)
+{
+    if (gFontInterface) {
+        gFontInterface->Release(gFontInterface);
+        gFontInterface = NULL;
+    }
+    if (gPrimarySurface) {
+        gPrimarySurface->Release(gPrimarySurface);
+        gPrimarySurface = NULL;
+    }
+    if (gDfbInterface) {
+        gDfbInterface->Release(gDfbInterface);
+        gDfbInterface = NULL;
+    }
+}
+
+/* ----------------------------------------------------------------------------
+ * showChannelInfoOSD - prikaz OSD teksta o kanalu na par sekundi
+ * ---------------------------------------------------------------------------*/
+static void showChannelInfoOSD(int channelIndex,
+                               uint16_t pmtPid,
+                               uint16_t audioPid,
+                               uint16_t videoPid)
+{
+    if (!gPrimarySurface) {
+        /* Ako nismo uspješno inicijalizirali DirectFB, samo ispis u konzolu. */
+        return;
+    }
+
+    /* Crna poluprozirna podloga */
+    int boxW = gScreenWidth / 3;
+    int boxH = gScreenHeight / 5;
+    int boxX = (gScreenWidth - boxW) / 2;
+    int boxY = (gScreenHeight - boxH) / 3;
+
+    gPrimarySurface->SetColor(gPrimarySurface, 0x00, 0x00, 0x00, 0xA0); /* RGBA, poluprozirno */
+    gPrimarySurface->FillRectangle(gPrimarySurface, boxX, boxY, boxW, boxH);
+
+    /* Bijela boja za tekst */
+    gPrimarySurface->SetColor(gPrimarySurface, 0xFF, 0xFF, 0xFF, 0xFF);
+
+    char lineBuf[128];
+    snprintf(lineBuf, sizeof(lineBuf),
+             "CH idx=%d\nPMT=%u\nA=%u\nV=%u",
+             channelIndex, pmtPid, audioPid, videoPid);
+
+    /* Ispišemo svaki red teksta malo niže */
+    const int lineHeight = 40;
+    int yPos = boxY + lineHeight;
+    char *line = strtok(lineBuf, "\n");
+    while (line) {
+        gPrimarySurface->DrawString(gPrimarySurface, line, -1, boxX + 20, yPos, DSTF_LEFT);
+        yPos += lineHeight;
+        line = strtok(NULL, "\n");
+    }
+    gPrimarySurface->Flip(gPrimarySurface, NULL, DSFLIP_NONE);
+
+    /* Ostavimo 3 sekunde, pa obrišemo taj pravokutnik (opet iscrtamo crno) */
+    sleep(3);
+
+    /* Obrišemo */
+    gPrimarySurface->SetColor(gPrimarySurface, 0x00, 0x00, 0x00, 0xFF);
+    gPrimarySurface->FillRectangle(gPrimarySurface, boxX, boxY, boxW, boxH);
+    gPrimarySurface->Flip(gPrimarySurface, NULL, DSFLIP_NONE);
 }
